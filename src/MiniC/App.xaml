@@ -1,0 +1,49 @@
+<Application x:Class="MiniC.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             ShutdownMode="OnExplicitShutdown">
+    <Application.Resources>
+        <SolidColorBrush x:Key="TextPrimary" Color="#F7F8FC" />
+        <SolidColorBrush x:Key="TextSecondary" Color="#B8BED0" />
+        <Style x:Key="InlineFileNameEditorStyle" TargetType="{x:Type TextBox}">
+            <Setter Property="MinHeight" Value="20" />
+            <Setter Property="Padding" Value="2,0" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Foreground" Value="#F01B2028" />
+            <Setter Property="CaretBrush" Value="#FF1B2028" />
+            <Setter Property="Background" Value="#EAF8FBFF" />
+            <Setter Property="BorderBrush" Value="#B86FA2DE" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="SelectionBrush" Value="#FF6E9FD9" />
+            <Setter Property="SelectionOpacity" Value="0.55" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Hidden" />
+            <Setter Property="ScrollViewer.VerticalScrollBarVisibility" Value="Hidden" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type TextBox}">
+                        <Border x:Name="EditorBorder"
+                                Padding="{TemplateBinding Padding}"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="2"
+                                SnapsToDevicePixels="True">
+                            <ScrollViewer x:Name="PART_ContentHost" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                                <Setter TargetName="EditorBorder" Property="Background" Value="#F7FFFFFF" />
+                                <Setter TargetName="EditorBorder" Property="BorderBrush" Value="#FF5E98DD" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="EditorBorder" Property="Opacity" Value="0.58" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Application.Resources>
+</Application>

@@ -1,0 +1,153 @@
+<Window x:Class="MiniC.Views.DesktopSurfaceWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:viewModels="clr-namespace:MiniC.ViewModels"
+        WindowStyle="None" AllowsTransparency="True" Background="Transparent"
+        ShowInTaskbar="False" ShowActivated="False" ResizeMode="NoResize"
+        UseLayoutRounding="True" SnapsToDevicePixels="True" AllowDrop="True"
+        Loaded="Window_Loaded" Closing="Window_Closing" Activated="Window_Activated"
+        Deactivated="Window_Deactivated"
+        DragEnter="Window_DragOver" DragOver="Window_DragOver" Drop="Window_Drop"
+        PreviewKeyDown="Window_PreviewKeyDown" PreviewMouseDown="Window_PreviewMouseDown">
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BooleanToVisibility" />
+    </Window.Resources>
+
+    <Grid x:Name="SelectionSurface" Background="#01000000" Focusable="True"
+          PreviewMouseLeftButtonDown="SelectionSurface_PreviewMouseLeftButtonDown"
+          PreviewMouseMove="SelectionSurface_PreviewMouseMove"
+          PreviewMouseLeftButtonUp="SelectionSurface_PreviewMouseLeftButtonUp"
+          PreviewMouseRightButtonUp="SelectionSurface_PreviewMouseRightButtonUp"
+          LostMouseCapture="SelectionSurface_LostMouseCapture">
+        <ItemsControl x:Name="ItemsHost" ItemsSource="{Binding}"
+                      Background="{Binding Background, RelativeSource={RelativeSource AncestorType=Window}}">
+            <ItemsControl.ItemsPanel>
+                <ItemsPanelTemplate><Canvas /></ItemsPanelTemplate>
+            </ItemsControl.ItemsPanel>
+            <ItemsControl.ItemContainerStyle>
+                <Style TargetType="ContentPresenter">
+                    <Setter Property="Canvas.Left" Value="{Binding X}" />
+                    <Setter Property="Canvas.Top" Value="{Binding Y}" />
+                </Style>
+            </ItemsControl.ItemContainerStyle>
+            <ItemsControl.ItemTemplate>
+                <DataTemplate DataType="{x:Type viewModels:DesktopItem}">
+                    <Border Tag="DesktopItemTile" Width="82" MinHeight="88" MaxHeight="{Binding AvailableHeight}"
+                            ClipToBounds="True" Padding="5" AllowDrop="True"
+                            CornerRadius="5"
+                            PreviewMouseLeftButtonDown="Item_MouseLeftButtonDown"
+                            PreviewMouseLeftButtonUp="Item_MouseLeftButtonUp"
+                            PreviewMouseMove="Item_MouseMove"
+                            PreviewMouseRightButtonUp="Item_MouseRightButtonUp"
+                            DragEnter="Item_DragOver" DragOver="Item_DragOver"
+                            DragLeave="Item_DragLeave" Drop="Item_Drop">
+                    <Border.Style>
+                        <Style TargetType="Border">
+                            <Setter Property="Background" Value="Transparent" />
+                            <Style.Triggers>
+                                <MultiDataTrigger>
+                                    <MultiDataTrigger.Conditions>
+                                        <Condition Binding="{Binding IsMouseOver, RelativeSource={RelativeSource Self}}" Value="True" />
+                                        <Condition Binding="{Binding IsItemDragActive, RelativeSource={RelativeSource AncestorType=Window}}" Value="False" />
+                                    </MultiDataTrigger.Conditions>
+                                    <Setter Property="Background" Value="#386080A8" />
+                                </MultiDataTrigger>
+                                <DataTrigger Binding="{Binding IsSelected}" Value="True">
+                                    <Setter Property="Background" Value="#805979A4" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding IsDropTarget}" Value="True">
+                                    <Setter Property="BorderBrush" Value="#D0A8D3FF" />
+                                    <Setter Property="BorderThickness" Value="1.5" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Border.Style>
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="46" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <Image Source="{Binding Icon}" Width="46" Height="46" Stretch="Uniform"
+                               HorizontalAlignment="Center" VerticalAlignment="Top">
+                            <Image.Style>
+                                <Style TargetType="Image">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsCutToClipboard}" Value="True">
+                                            <Setter Property="Opacity" Value="0.5" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Image.Style>
+                        </Image>
+                        <Border Width="20" Height="20" CornerRadius="5" Background="#F7FFFFFF"
+                                BorderBrush="#26000000" BorderThickness="1"
+                                HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,5,0"
+                                Visibility="{Binding IsCopiedToClipboard, Converter={StaticResource BooleanToVisibility}}">
+                            <Border.Effect><DropShadowEffect Color="#50000000" BlurRadius="3" ShadowDepth="1" Opacity="0.45" /></Border.Effect>
+                            <Viewbox Width="14" Height="14">
+                                <Path Data="M6,2.5 H11.5 A2,2 0 0 1 13.5,4.5 V10 H11.5 V4.5 H6 Z M4.5,5.5 H10 A2,2 0 0 1 12,7.5 V13.5 H4.5 A2,2 0 0 1 2.5,11.5 V7.5 A2,2 0 0 1 4.5,5.5 Z"
+                                      Stroke="#0F6CBD" StrokeThickness="1.5" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" Fill="Transparent" />
+                            </Viewbox>
+                        </Border>
+                        <Border Width="20" Height="20" CornerRadius="5" Background="#F7FFFFFF"
+                                BorderBrush="#26000000" BorderThickness="1"
+                                HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,5,0"
+                                Visibility="{Binding IsCutToClipboard, Converter={StaticResource BooleanToVisibility}}">
+                            <Border.Effect><DropShadowEffect Color="#50000000" BlurRadius="3" ShadowDepth="1" Opacity="0.45" /></Border.Effect>
+                            <Viewbox Width="14" Height="14">
+                                <Path Data="M4,2.5 A2,2 0 1 0 4,6.5 A2,2 0 1 0 4,2.5 M4,9.5 A2,2 0 1 0 4,13.5 A2,2 0 1 0 4,9.5 M5.7,5.4 L13,11.8 M5.7,10.6 L13,4.2"
+                                      Stroke="#0F6CBD" StrokeThickness="1.5" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" Fill="Transparent" />
+                            </Viewbox>
+                        </Border>
+                        <Grid Grid.Row="1" Width="72" Margin="0,4,0,0" HorizontalAlignment="Center">
+                            <Grid.Style>
+                                <Style TargetType="Grid">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsCutToClipboard}" Value="True">
+                                            <Setter Property="Opacity" Value="0.5" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Grid.Style>
+                            <TextBlock Text="{Binding Name}" Foreground="White" FontSize="12"
+                                       TextAlignment="Center" TextWrapping="Wrap">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+                                        <Setter Property="MaxHeight" Value="32" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsRenaming}" Value="True">
+                                                <Setter Property="Visibility" Value="Collapsed" />
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding ShowFullName}" Value="True">
+                                                <Setter Property="TextTrimming" Value="None" />
+                                                <Setter Property="MaxHeight" Value="96" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                                <TextBlock.Effect>
+                                    <DropShadowEffect Color="#D0000000" BlurRadius="2" ShadowDepth="1" />
+                                </TextBlock.Effect>
+                            </TextBlock>
+                            <TextBox x:Name="RenameBox"
+                                 Style="{StaticResource InlineFileNameEditorStyle}"
+                                 Text="{Binding EditName, UpdateSourceTrigger=PropertyChanged}"
+                                 Visibility="{Binding IsRenaming, Converter={StaticResource BooleanToVisibility}}"
+                                 HorizontalAlignment="Stretch" VerticalAlignment="Top" MaxHeight="42"
+                                 TextAlignment="Center" TextWrapping="Wrap"
+                                 PreviewKeyDown="RenameBox_PreviewKeyDown"
+                                 LostKeyboardFocus="RenameBox_LostKeyboardFocus" />
+                        </Grid>
+                    </Grid>
+                    </Border>
+                </DataTemplate>
+            </ItemsControl.ItemTemplate>
+        </ItemsControl>
+        <Canvas IsHitTestVisible="False" Panel.ZIndex="10">
+            <Border x:Name="SelectionMarquee" Visibility="Collapsed"
+                    Background="#284A90E2" BorderBrush="#C06EA8F1"
+                    BorderThickness="1" CornerRadius="2" />
+        </Canvas>
+    </Grid>
+</Window>
