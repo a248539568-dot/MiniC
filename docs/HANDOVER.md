@@ -2,7 +2,9 @@
 
 更新日期：2026-09-13。当前源码和本地安装包版本：0.58.9。本文件只保留当前维护入口；逐次变更与历史验证见根目录 development.log，用户可见变化见 CHANGELOG.md。
 
-源码仓库：[a248539568-dot/MiniC](https://github.com/a248539568-dot/MiniC)，私有仓库，主分支 main。GitHub 保存源码、文档、测试和自动构建配置；本地归档、SDK 和安装包不包含在提交中。
+源码仓库：[a248539568-dot/MiniC](https://github.com/a248539568-dot/MiniC)，公开仓库，主分支 main。GitHub 保存源码、文档、测试和自动构建配置；本地归档、SDK 和安装包不包含在提交中。
+
+搜索定位：Windows 桌面整理、桌面图标分组、桌面收纳盒；英文为 desktop organizer、desktop icons、icon organizer。仓库简介与 Topics 同步使用产品类别、Windows 平台及 WPF / C# / .NET 技术标签。公开可见不等于已经指定开源许可证。
 
 ## 当前基线
 

@@ -1,10 +1,16 @@
-# MiniC
+# MiniC — Windows Desktop Organizer and Icon Grouping
 
 [简体中文](README.md)
 
-MiniC is a Windows 10/11 desktop organizer. It renders desktop items through a dedicated desktop surface and independent, composable boxes while keeping every real file in the user's Desktop or Public Desktop directory.
+MiniC is a Windows 10/11 desktop organizer for desktop icon grouping, shortcut organization, and tabbed desktop boxes. Group files, folders, and shortcuts into independent boxes, merge boxes into tabs, or drag a tab out into its own box. Real files remain in the user's Desktop or Public Desktop directory.
 
-> Current version: `0.58.9`. The project does not yet declare an open-source license. Until the maintainers add a root `LICENSE`, the source should not be assumed to grant permission to copy, modify, or redistribute it.
+> Current version: `0.58.9`. Supports Windows 10 / Windows 11, x64. See the license status below.
+
+## Who It Is For
+
+- People with crowded desktops who want to group work documents, app shortcuts, and project files.
+- People who want tabbed desktop organization: merge boxes, reorder tabs horizontally, and drag vertically to detach or merge them.
+- People who want to retain familiar Windows file operations, context menus, copy and paste, and existing Desktop file paths.
 
 ## Design Principles
 
@@ -82,4 +88,6 @@ Agents and automation tools should read [AGENTS.md](AGENTS.md) before changing t
 
 ## License Status
 
-Third-party attributions are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Those notices do not license MiniC itself. A project license must be selected and added before an open-source release.
+This repository is publicly visible, but the project does not yet declare an open-source license. Until the maintainers add a root `LICENSE`, the source should not be assumed to grant permission to copy, modify, or redistribute it.
+
+Third-party attributions are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Those notices do not license MiniC itself.
