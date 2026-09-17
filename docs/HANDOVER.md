@@ -1,6 +1,8 @@
 # MiniC 项目接手记录
 
-更新日期：2026-09-13。当前源码和本地安装包版本：0.58.9。本文件只保留当前维护入口；逐次变更与历史验证见根目录 development.log，用户可见变化见 CHANGELOG.md。
+2026-09-17 0.59.0：[外部保存、回收站与标题栏激活](BUGFIX-2026-09-17.md)，并补齐桌面/收纳盒文件失焦自动改名。测试基线 49/49；新增失焦自检在临时目录验证真实改名、Escape、无效名称及焦点不回抢。发布包与 GitHub Release 状态以 development.log 为准。
+
+更新日期：2026-09-17。当前源码版本：0.59.0。本文件只保留当前维护入口；逐次变更与历史验证见根目录 development.log，用户可见变化见 CHANGELOG.md。
 
 源码仓库：[a248539568-dot/MiniC](https://github.com/a248539568-dot/MiniC)，公开仓库，主分支 main。GitHub 保存源码、文档、测试和自动构建配置；本地归档、SDK 和安装包不包含在提交中。
 
@@ -10,8 +12,8 @@
 
 - 技术栈：C#、.NET 10、WPF、Windows Forms 托盘、Windows Shell COM / Win32。
 - 正式项目：src/MiniC 与 tests/MiniC.Tests，统一由 MiniC.sln 构建。
-- 当前测试基线：41 项独立测试；0.58.9 自包含发布版 9 项隔离自检通过。
-- 本地安装包：dist/MiniC-Setup-v0.58.9.exe，同目录有 SHA-256 校验文件；dist 不提交到 Git。
+- 当前测试基线：49 项独立测试，发布前运行 10 项隔离自检。
+- 本地安装包：dist/MiniC-Setup-v0.59.0.exe，同目录有 SHA-256 校验文件；dist 不提交到 Git，安装包作为 GitHub Release 附件提供。
 - 最新交互：左右拖标签只排序，上下拖用于抽离/合并；接收点限定在标签栏，独立盒使用名称区域。原配色和透明度不变，仅细边框提示接收。
 - 动画：逐帧跟手、稳定预览视口、差量宿主同步；禁止恢复逐事件追赶动画、整盒缩放或全部窗口重建。
 - 自动构建配置：.github/workflows/build.yml，在 Windows 环境恢复依赖、构建和运行独立测试；首次远端运行结果以上传后的 GitHub Actions 为准。

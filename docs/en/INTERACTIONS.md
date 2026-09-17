@@ -13,7 +13,7 @@
 - `F2` and Rename start inline editing. The base name is selected by default while a visible extension remains unselected.
 - The rename editor replaces only the original label below the icon. It stays within the label slot and never stretches the item horizontally or covers the icon.
 - Dragging inside the rename editor selects text and must never start an icon drag.
-- `Enter` commits, `Escape` cancels, and file-name editing is cancelled on focus loss.
+- File-name editing commits on focus loss, including clicking elsewhere or switching windows or tabs. Enter also commits; Escape cancels. Repeated focus events submit only once, completion does not steal focus, and failed blur submissions restore the original name without changing the file.
 
 ## Dragging Files and Icons
 
@@ -45,4 +45,6 @@ Desktop-to-box and box-to-desktop operations change visual ownership only. Exter
 - The full-screen MiniC icon layer always stays below regular applications and above the Explorer desktop. An inactive box stays in the desktop layer; clicking it promotes it as a normal active foreground window without permanent Topmost, and activating another application returns it to the desktop layer. Boxes always remain above the MiniC icon layer.
 
 
-- Desktop file changes are driven by Windows Shell notifications; a full synchronization runs only for an explicit Refresh command.
+- Shell notifications and FileSystemWatcher run together for desktop creates, deletes, renames, writes, sizes, and attributes. External applications do not need to emit Shell notifications.
+- A background metadata comparison runs once per second and synchronizes items only when changes are found. Refresh requests are retained while busy; external renames are applied under the refresh lock. Recycle Bin counts and stock empty/full icons use a separate serialized path, avoiding cached virtual icons and late overwrites.
+- Clicking a box's header, title, buttons, or tabs activates it like a content-area click, without permanent Topmost. Existing drag and title-rename gestures are preserved.

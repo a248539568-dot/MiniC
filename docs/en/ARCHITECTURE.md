@@ -30,6 +30,8 @@ App
 
 `App` owns startup, single-instance behavior, diagnostics, and cleanup. `DesktopCoordinator` owns cross-window business state. Views submit actions through callbacks, services isolate Windows and file-system capabilities, and ViewModels do not perform file operations.
 
+Shell notifications and file-system watchers run together. `DesktopDirectorySnapshot` provides background metadata reconciliation; refresh requests remain pending while busy, and external renames are applied under the refresh lock. `RecycleBinIconService` alone queries and assigns empty/full icons, preventing generic cached icons from overwriting current state.
+
 ## Window Layering
 
 MiniC uses independent top-level tool windows and does not attach windows to WorkerW with cross-process `SetParent`. The intended Z order is:
@@ -41,7 +43,7 @@ MiniC desktop surface
 Explorer desktop
 ```
 
-MiniC windows do not appear in the taskbar or `Alt+Tab` and must never rise above regular applications merely because of selection, menus, or inline editing.
+MiniC windows do not appear in the taskbar or `Alt+Tab`. A user click on a box's content, header, buttons, or tabs activates it as a normal foreground window without permanent Topmost; an inactive box returns to the desktop layer. The full-screen desktop surface always remains below regular applications.
 
 ## Ownership and Topology
 

@@ -50,6 +50,13 @@ public partial class App : System.Windows.Application
 
     protected override async void OnStartup(StartupEventArgs e)
     {
+        if (e.Args.Contains("--rename-focus-smoke-test", StringComparer.OrdinalIgnoreCase))
+        {
+            base.OnStartup(e);
+            ShutdownMode = ShutdownMode.OnExplicitShutdown;
+            Shutdown(await Diagnostics.InlineRenameSmokeTest.RunAsync() ? 0 : 19);
+            return;
+        }
         if (DesktopFallbackWatchdog.TryParse(e.Args, out var watchedProcessId, out var watchedStartTime))
         {
             base.OnStartup(e);
@@ -244,6 +251,9 @@ public partial class App : System.Windows.Application
             var iconModeRestored = secondGroup.ViewMode == "Icons" && stateChangeCount == 2;
             window.Show();
             var iconNameAlignmentWorks = window.ValidateIconNameAlignmentForSmokeTest(firstItem, secondItem);
+            var validationOutput = e.Args.FirstOrDefault(argument => argument.StartsWith("--validation-output=", StringComparison.Ordinal));
+            var headerActivationWorks = await window.ValidateHeaderActivationForSmokeTestAsync(
+                validationOutput?["--validation-output=".Length..]);
             var inlineRenameLayoutWorks = window.ValidateInlineRenameLayoutForSmokeTest(firstItem);
             var groupSeparationAnimationWorks = await window.ValidateGroupSeparationAnimationAsync();
             firstGroup.Theme = "Graphite";
@@ -267,25 +277,35 @@ public partial class App : System.Windows.Application
             dragState.SetActive(false);
             sharedDragStateWorks &= !window.IsItemDragActive;
             window.SetMergeDropTarget(true);
-            await Task.Delay(210);
-            var mergeEnterAnimationWorks = window.IsMergeDropVisualActive;
+            var mergeEnterAnimationWorks = await window.WaitForMergeDropVisualForSmokeTestAsync(true);
             window.SetMergeDropTarget(false);
-            await Task.Delay(210);
-            var mergeLeaveAnimationWorks = !window.IsMergeDropVisualActive;
+            var mergeLeaveAnimationWorks = await window.WaitForMergeDropVisualForSmokeTestAsync(false);
             window.ClosePermanently();
-            Shutdown(movedToEnd && movedToStart && movedToPointerSlot
-                     && singleSelectionShowsFullName && multipleSelectionHidesFullName && tabsRestored
-                     && collapsedHeightWorks && expandedHeightWorks
-                     && listPreviewWorks && iconModeRestored
-                     && independentAppearanceWorks && customAppearanceMenuWorks
-                     && simulatedLiquidGlassWorks && inlineGroupRenameWorks && tabDropIntentWorks && mergeDropRegionWorks
-                       && iconNameAlignmentWorks
-                       && inlineRenameLayoutWorks
-                       && groupSeparationAnimationWorks
-                     && tabMergeAppendWorks
-                     && topologyGuardWorks
-                     && sharedDragStateWorks && headerDragPolicyWorks && emptyMergeTargetWorks
-                     && mergeEnterAnimationWorks && mergeLeaveAnimationWorks ? 0 : 14);
+            var checks = new (string Name, bool Passed)[]
+            {
+                (nameof(movedToEnd), movedToEnd), (nameof(movedToStart), movedToStart),
+                (nameof(movedToPointerSlot), movedToPointerSlot), (nameof(singleSelectionShowsFullName), singleSelectionShowsFullName),
+                (nameof(multipleSelectionHidesFullName), multipleSelectionHidesFullName), (nameof(tabsRestored), tabsRestored),
+                (nameof(collapsedHeightWorks), collapsedHeightWorks), (nameof(expandedHeightWorks), expandedHeightWorks),
+                (nameof(listPreviewWorks), listPreviewWorks), (nameof(iconModeRestored), iconModeRestored),
+                (nameof(independentAppearanceWorks), independentAppearanceWorks), (nameof(customAppearanceMenuWorks), customAppearanceMenuWorks),
+                (nameof(simulatedLiquidGlassWorks), simulatedLiquidGlassWorks), (nameof(inlineGroupRenameWorks), inlineGroupRenameWorks),
+                (nameof(tabDropIntentWorks), tabDropIntentWorks), (nameof(mergeDropRegionWorks), mergeDropRegionWorks),
+                (nameof(iconNameAlignmentWorks), iconNameAlignmentWorks), (nameof(inlineRenameLayoutWorks), inlineRenameLayoutWorks),
+                (nameof(groupSeparationAnimationWorks), groupSeparationAnimationWorks), (nameof(tabMergeAppendWorks), tabMergeAppendWorks),
+                (nameof(topologyGuardWorks), topologyGuardWorks), (nameof(sharedDragStateWorks), sharedDragStateWorks),
+                (nameof(headerDragPolicyWorks), headerDragPolicyWorks), (nameof(headerActivationWorks), headerActivationWorks),
+                (nameof(emptyMergeTargetWorks), emptyMergeTargetWorks), (nameof(mergeEnterAnimationWorks), mergeEnterAnimationWorks),
+                (nameof(mergeLeaveAnimationWorks), mergeLeaveAnimationWorks)
+            };
+            var failedChecks = checks.Where(check => !check.Passed).Select(check => check.Name).ToArray();
+            if (failedChecks.Length > 0)
+            {
+                var message = "Group checks failed: " + string.Join(", ", failedChecks);
+                Console.Error.WriteLine(message);
+                MiniCLogger.Warning(nameof(App), message);
+            }
+            Shutdown(failedChecks.Length == 0 ? 0 : 14);
             return;
         }
 

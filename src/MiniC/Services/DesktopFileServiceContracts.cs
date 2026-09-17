@@ -16,7 +16,8 @@ public sealed record DesktopFolderDropResult(
 public sealed record DesktopRecycleResult(List<string> RemovedPaths, List<string> Errors);
 
 /// <summary>桌面目录发生变化时传递给界面层的事件数据。</summary>
-public sealed class DesktopChangedEventArgs(IReadOnlyCollection<DesktopRename> renames) : EventArgs
+public sealed class DesktopChangedEventArgs(IReadOnlyCollection<DesktopRename> renames, bool hasFileChanges = true) : EventArgs
 {
     public IReadOnlyCollection<DesktopRename> Renames { get; } = renames;
+    public bool HasFileChanges { get; } = hasFileChanges;
 }

@@ -29,7 +29,7 @@ public partial class DesktopSurfaceWindow : Window
     private System.Windows.Point _dragStart;
     private bool _allowClose;
     private bool _dropTargetActive;
-    private bool _renameCommitRunning;
+    private readonly InlineFileRenameSession _renameSession = new();
     private bool _transientPopupOpen;
     private bool _showingBackgroundMenu;
     private HwndSource? _windowSource;
@@ -130,9 +130,11 @@ public partial class DesktopSurfaceWindow : Window
     public void BeginRename(DesktopItem item)
     {
         if (!_items.Contains(item) || item.IsVirtual) return;
+        if (_renameSession.IsCommitting(item)) return;
         _openGestureTracker.Reset();
+        foreach (var candidate in _items.Where(candidate => candidate.IsRenaming && !ReferenceEquals(candidate, item)))
+            _ = CommitRenameAsync(candidate, restoreFocus: false);
         SetActivationEnabled(true);
-        foreach (var candidate in _items) candidate.IsRenaming = false;
         item.EditName = DesktopFileService.GetRenameEditName(item);
         item.IsRenaming = true;
         Dispatcher.BeginInvoke(() =>
@@ -217,7 +219,7 @@ public partial class DesktopSurfaceWindow : Window
 
     public void SetTransientPopupOpen(bool open) => _transientPopupOpen = open;
 
-    public void ClearTransientState(bool cancelRename = true)
+    public void ClearTransientState(bool commitRename = true)
     {
         _openGestureTracker.Reset();
         _marqueeSelection.Cancel();
@@ -225,7 +227,8 @@ public partial class DesktopSurfaceWindow : Window
         {
             item.IsSelected = false;
             item.IsDropTarget = false;
-            if (cancelRename) item.IsRenaming = false;
+            if (commitRename && item.IsRenaming && !_renameSession.IsCommitting(item))
+                _ = CommitRenameAsync(item, restoreFocus: false);
         }
         SelectionDisplayService.Update(_items);
         if (_dropTargetActive) SetDropTargetActive(false);
@@ -495,7 +498,7 @@ public partial class DesktopSurfaceWindow : Window
     {
         if (FindVisualAncestor<TextBox>(e.OriginalSource as DependencyObject) is not null) return;
         var item = _items.FirstOrDefault(candidate => candidate.IsRenaming);
-        if (item is not null) CancelRename(item);
+        if (item is not null) _ = CommitRenameAsync(item, restoreFocus: false);
     }
 
     private async void RenameBox_PreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
@@ -513,35 +516,26 @@ public partial class DesktopSurfaceWindow : Window
         }
     }
 
-    private void RenameBox_LostKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e)
+    private async void RenameBox_LostKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e)
     {
-        if (!_renameCommitRunning && sender is TextBox { DataContext: DesktopItem item } && item.IsRenaming)
-            CancelRename(item);
+        if (sender is TextBox { DataContext: DesktopItem item } editor
+            && item.IsRenaming && !editor.IsKeyboardFocusWithin && !_renameSession.IsCommitting(item))
+            await CommitRenameAsync(item, restoreFocus: false);
     }
 
     private void CancelRename(DesktopItem item)
     {
-        item.IsRenaming = false;
-        item.EditName = DesktopFileService.GetRenameEditName(item);
-        Keyboard.Focus(SelectionSurface);
+        if (_renameSession.Cancel(item)) Keyboard.Focus(SelectionSurface);
     }
 
-    private async Task CommitRenameAsync(DesktopItem item)
+    private async Task CommitRenameAsync(DesktopItem item, bool restoreFocus = true)
     {
-        if (_renameCommitRunning || !item.IsRenaming) return;
-        _renameCommitRunning = true;
-        try
-        {
-            if (await _callbacks.RenameItemAsync(item, item.EditName))
-            {
-                item.IsRenaming = false;
-                Keyboard.Focus(SelectionSurface);
-            }
-        }
-        finally
-        {
-            _renameCommitRunning = false;
-        }
+        if (!item.IsRenaming) return;
+        var succeeded = await _renameSession.CommitAsync(item,
+            name => _callbacks.RenameItemAsync(item, name), keepEditingOnFailure: restoreFocus);
+        // 失焦提交不得把焦点抢回桌面；Enter 也只在焦点仍属于当前编辑器时回到选择区。
+        if (succeeded && restoreFocus && IsActive && Keyboard.FocusedElement is TextBox { DataContext: DesktopItem focused }
+            && ReferenceEquals(focused, item)) Keyboard.Focus(SelectionSurface);
     }
 
     private void Window_DragOver(object sender, System.Windows.DragEventArgs e)

@@ -1,3 +1,25 @@
+2026-09-17 09:25 MiniC 0.59.0 发布准备与失焦重命名补齐
+- 将桌面、收纳盒文件编辑器改为失焦提交，覆盖点击其他位置、切换窗口与标签；新增 InlineFileRenameSession 去重提交，保留 Enter 与 Escape，自动提交失败恢复原名且不抢回焦点。
+- 文件改名请求串行排队，避免跨窗口编辑时丢请求；正常退出等待当前改名结束后保存布局。新增真实临时文件与两类离屏编辑器的 --rename-focus-smoke-test。
+- 发布包含前述外部文件同步、回收站独立图标、标题栏/标签激活修复；版本同步为 0.59.0，更新中英文交互、发布说明和接手记录。
+- Release 构建零警告零错误，49/49 测试通过；失焦、重命名策略、收纳盒自检通过。综合自检改为按可观察动画状态等待并报告失败子项，避免仅依赖固定时间点采样。
+- 本次按用户要求构建自包含安装包并推送 GitHub，安装包及 SHA-256 将放入 v0.59.0 Release 附件；发布验证结果以 Release 页面为准，不自动安装到本机。
+2026-09-17 09:04 MiniC 外部文件刷新、回收站状态与收纳盒激活修复
+- 修复 Photoshop 等外部程序保存到桌面后不出现：Shell 通知和 FileSystemWatcher 始终并行，增加 FileSystemWatcher 错误回退与每秒轻量元数据快照；只在路径/修改时间/大小/属性变化时同步，刷新忙碌期间保留请求。
+- 修复回收站清空后仍显示有内容：加入回收站 Shell 命名空间监听，每秒独立查询 SHQueryRecycleBinW 计数，RecycleBinIconService 串行更新空/满图标；通用图标异步加载排除回收站，失败重试并在退出时停止迟到结果。
+- 修复收纳盒标题栏无法激活：标题栏空白、名称、按钮、标签在进入拖动/操作前统一调用 SetActivationEnabled(true)，保留普通前台窗口与非永久置顶行为。
+- 外部改名在刷新锁内应用；同一批次同时存在已知改名和其他文件变化时仍会刷新，背景菜单不清空待处理改名。
+- 联网核对 Microsoft FileSystemWatcher、SHChangeNotifyRegister、SHQueryRecycleBinW、WM_MOUSEACTIVATE 官方资料。Release 构建零警告零错误，45/45 独立测试通过，收纳盒/文件传输/启动专项自检通过。
+- 新增 docs/BUGFIX-2026-09-17.md、DesktopDirectorySnapshot、RecycleBinIconService 及外部保存/回收站/失败重试/标题激活测试；更新中英文架构、交互、CHANGELOG、接手记录。截图 .local/validation/20260917/header-activation.png。
+- 未使用 Photoshop 真实保存、未清空用户回收站、未安装或更新当前运行实例，未重建安装包或推送 GitHub。
+2026-09-17 08:52 MiniC 外部保存刷新、回收站状态与标题栏激活修复
+- DesktopFileService 始终并行开启 FileSystemWatcher 与 Shell 通知，覆盖文件名、目录名、写入、大小和属性；回收站命名空间采用规范 PIDL 注册，监听异常触发重同步并记录日志。
+- 新增 DesktopDirectorySnapshot，在后台按秒检查元数据差异，仅发生变化时同步；刷新忙碌期间保留请求，已完成快照才提交基线，外部改名在锁内处理，菜单不清空待处理改名。
+- 新增 RecycleBinIconService，独立串行查询真实计数并更新空/满图标；通用图标加载排除回收站，失败保留状态并重试，退出时停止迟到更新。
+- 标题栏空白、名称、按钮及标签与内部内容一样激活到前台，按下坐标先于激活保存，保持拖动、双击改名和普通非永久置顶策略。
+- 官方文档核对 FileSystemWatcher、SHChangeNotifyRegister、SHQueryRecycleBinW 和 WM_MOUSEACTIVATE；Release 构建零警告零错误，45/45 测试通过，收纳盒/重命名/启动三项自检通过。
+- 新增直接文件保存与原子改名监听、快照差异、回收站状态/失败重试/关闭等测试；标题栏和标签通过 WPF 路由事件验证失活→激活及手势清理，检查截图 .local/validation/20260917/header-activation.png。
+- 更新中英文架构/交互、CHANGELOG、接手记录，新增 docs/BUGFIX-2026-09-17.md。未使用 Photoshop 进行真实保存、未清空用户回收站、未打包/安装/推送，当前 0.58.9 安装包不含本次修复。
 2026-09-13 14:54 MiniC 公开仓库与搜索定位优化
 - 按用户要求将仓库定位改为公开展示，保留原许可证状态；README 明确公开可见与开源授权的区别，不自行选择许可证。
 - 中英文 README 标题、首段和使用场景加入 Windows 桌面整理、图标分组、桌面收纳盒、desktop organizer、desktop icons 等准确用途描述。

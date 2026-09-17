@@ -42,6 +42,7 @@ public sealed class DesktopCoordinator : IDisposable
     private readonly DispatcherTimer _reconcileTimer;
     private readonly SemaphoreSlim _saveGate = new(1, 1);
     private readonly SemaphoreSlim _refreshGate = new(1, 1);
+    private readonly SemaphoreSlim _renameGate = new(1, 1);
     private readonly WinForms.NotifyIcon _trayIcon;
     private readonly System.Drawing.Icon _applicationIcon;
     private readonly WinForms.ToolStripMenuItem _startupMenuItem;
@@ -59,7 +60,10 @@ public sealed class DesktopCoordinator : IDisposable
     private bool _renameInProgress;
     private bool _isExiting;
     private bool _isDisposed;
-    private long _recycleBinItemCount = -2;
+    private readonly RecycleBinIconService _recycleBinIcons = new();
+    private DesktopDirectorySnapshot? _desktopSnapshot;
+    private bool _refreshPending;
+    private bool _reconciling;
     private bool _clipboardListenerRegistered;
 
     public ObservableCollection<DeskGroup> Groups { get; } = [];
@@ -558,7 +562,9 @@ public sealed class DesktopCoordinator : IDisposable
 
     private async Task<bool> RenameItemCoreAsync(DesktopItem item, string newName)
     {
-        if (_renameInProgress) return false;
+        if (_isExiting) return false;
+        await _renameGate.WaitAsync();
+        if (_isExiting) { _renameGate.Release(); return false; }
         _renameInProgress = true;
         await _refreshGate.WaitAsync();
         try
@@ -592,6 +598,7 @@ public sealed class DesktopCoordinator : IDisposable
         {
             _renameInProgress = false;
             _refreshGate.Release();
+            _renameGate.Release();
         }
     }
 
@@ -704,87 +711,103 @@ public sealed class DesktopCoordinator : IDisposable
 
     private async Task RefreshAsync()
     {
+        if (_isExiting) return;
+        _refreshPending = true;
         if (_renameInProgress || IsRenameEditing())
         {
             _refreshDeferredByRename = true;
             return;
         }
-        if (_isExiting || _desktopBackgroundMenuActive || !await _refreshGate.WaitAsync(0)) return;
+        if (_desktopBackgroundMenuActive || !await _refreshGate.WaitAsync(0)) return;
         try
         {
-            var existingPaths = _nativeDesktopService.EnumerateDesktopItems().ToHashSet(StringComparer.OrdinalIgnoreCase);
-            _desktopAssignmentRetentionService.Reconcile(
-                _layout.NativeDesktop.Assignments, existingPaths, Environment.TickCount64);
-
-            var groupDiscoveries = await Task.WhenAll(Groups.Select(async group =>
-                (Group: group, Items: await _nativeDesktopService.ReadAssignedItemsAsync(
-                    group.Id, _layout.NativeDesktop.Assignments))));
-            foreach (var (group, discoveredItems) in groupDiscoveries)
+            do
             {
-                var discovered = discoveredItems;
-                var order = group.ItemOrder.Select((name, index) => (name, index))
-                    .GroupBy(pair => pair.name, StringComparer.OrdinalIgnoreCase)
-                    .ToDictionary(items => items.Key, items => items.First().index, StringComparer.OrdinalIgnoreCase);
-                discovered = discovered
-                    .OrderBy(item => order.TryGetValue(Path.GetFileName(item.Path), out var index) ? index : int.MaxValue)
-                    .ThenBy(item => item.Name, StringComparer.CurrentCultureIgnoreCase)
-                    .ToList();
+                _refreshPending = false;
+                await RefreshCoreAsync();
+            } while (_refreshPending && !_isExiting && !_desktopBackgroundMenuActive
+                     && !_renameInProgress && !IsRenameEditing());
+        }
+        catch
+        {
+            _refreshPending = true;
+            throw;
+        }
+        finally { _refreshGate.Release(); }
+    }
 
-                var existing = group.Items.ToDictionary(item => item.Path, StringComparer.OrdinalIgnoreCase);
-                var desired = discovered.Select(item =>
-                {
-                    if (!existing.TryGetValue(item.Path, out var current)) return item;
-                    return DesktopItemRefreshService.Merge(current, item);
-                }).ToArray();
-                SynchronizeItems(group.Items, desired);
-                group.ItemOrder = group.Items.Select(item => Path.GetFileName(item.Path)).ToList();
-                _ = LoadIconsAsync(group.Items, group.Items.Where(item => item.Icon is null || item.NeedsIconRefresh).ToArray());
-            }
+    private Task<DesktopDirectorySnapshot> CaptureDesktopSnapshotAsync() => Task.Run(() =>
+        DesktopDirectorySnapshot.Capture(_nativeDesktopService.EnumerateDesktopItems()));
 
-            var unassignedPaths = existingPaths
-                .Where(path => !_layout.NativeDesktop.Assignments.ContainsKey(path))
-                .ToArray();
-            var desktopDiscovered = await _nativeDesktopService.ReadItemsAsync(unassignedPaths);
-            desktopDiscovered.AddRange(DesktopFileService.GetVisibleVirtualDesktopItems());
-            EnsureDesktopPositions(desktopDiscovered, useExplorerPositions: !_initialDesktopPlacementCompleted);
-            _initialDesktopPlacementCompleted = true;
-            if (_nativeDesktopService.IsAutoArrangeEnabled()
-                && _desktopIconPlacementService.AutoArrange(
-                    desktopDiscovered, _layout.NativeDesktop.ManagedPositions))
-                ScheduleSave();
-            desktopDiscovered = desktopDiscovered
-                .OrderBy(item => _layout.NativeDesktop.ManagedPositions[item.Path].X)
-                .ThenBy(item => _layout.NativeDesktop.ManagedPositions[item.Path].Y)
+    private async Task RefreshCoreAsync()
+    {
+        ApplyRenames(_deferredDesktopRenames.ToArray());
+        _deferredDesktopRenames.Clear();
+        var snapshot = await CaptureDesktopSnapshotAsync();
+        if (_isExiting) return;
+        var existingPaths = snapshot.Paths.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        _desktopAssignmentRetentionService.Reconcile(
+            _layout.NativeDesktop.Assignments, existingPaths, Environment.TickCount64);
+
+        var groupDiscoveries = await Task.WhenAll(Groups.Select(async group =>
+            (Group: group, Items: await _nativeDesktopService.ReadAssignedItemsAsync(
+                group.Id, _layout.NativeDesktop.Assignments))));
+        if (_isExiting) return;
+        foreach (var (group, discoveredItems) in groupDiscoveries)
+        {
+            var discovered = discoveredItems;
+            var order = group.ItemOrder.Select((name, index) => (name, index))
+                .GroupBy(pair => pair.name, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(items => items.Key, items => items.First().index, StringComparer.OrdinalIgnoreCase);
+            discovered = discovered
+                .OrderBy(item => order.TryGetValue(Path.GetFileName(item.Path), out var index) ? index : int.MaxValue)
+                .ThenBy(item => item.Name, StringComparer.CurrentCultureIgnoreCase)
                 .ToList();
-            var existingDesktop = DesktopItems.ToDictionary(item => item.Path, StringComparer.OrdinalIgnoreCase);
-            var desiredDesktop = desktopDiscovered.Select(item =>
+
+            var existing = group.Items.ToDictionary(item => item.Path, StringComparer.OrdinalIgnoreCase);
+            var desired = discovered.Select(item =>
             {
-                if (!existingDesktop.TryGetValue(item.Path, out var current)) return item;
+                if (!existing.TryGetValue(item.Path, out var current)) return item;
                 return DesktopItemRefreshService.Merge(current, item);
             }).ToArray();
-            SynchronizeItems(DesktopItems, desiredDesktop);
-            foreach (var item in DesktopItems)
-            {
-                var position = _layout.NativeDesktop.ManagedPositions[item.Path];
-                _desktopSurface?.SetScreenPosition(item, position.X, position.Y);
-            }
-            _ = LoadIconsAsync(DesktopItems, DesktopItems.Where(item => item.Icon is null || item.NeedsIconRefresh).ToArray());
-            var recycleBinItemCount = DesktopFileService.GetRecycleBinItemCount();
-            var shouldRefreshRecycleBinIcon = recycleBinItemCount >= 0
-                                              && recycleBinItemCount != _recycleBinItemCount;
-            _recycleBinItemCount = recycleBinItemCount;
-            if (shouldRefreshRecycleBinIcon)
-            {
-                await RefreshRecycleBinIconsAsync(DesktopItems.Where(item => item.Path.Equals(
-                    DesktopFileService.RecycleBinShellPath, StringComparison.OrdinalIgnoreCase)).ToArray(),
-                    recycleBinItemCount == 0);
-            }
-            ApplyClipboardItemState();
+            SynchronizeItems(group.Items, desired);
+            group.ItemOrder = group.Items.Select(item => Path.GetFileName(item.Path)).ToList();
+            _ = LoadIconsAsync(group.Items, group.Items.Where(item => item.Icon is null || item.NeedsIconRefresh).ToArray());
         }
-        finally
+
+        var unassignedPaths = existingPaths
+            .Where(path => !_layout.NativeDesktop.Assignments.ContainsKey(path))
+            .ToArray();
+        var desktopDiscovered = await _nativeDesktopService.ReadItemsAsync(unassignedPaths);
+        if (_isExiting) return;
+        desktopDiscovered.AddRange(DesktopFileService.GetVisibleVirtualDesktopItems());
+        EnsureDesktopPositions(desktopDiscovered, useExplorerPositions: !_initialDesktopPlacementCompleted);
+        _initialDesktopPlacementCompleted = true;
+        if (_nativeDesktopService.IsAutoArrangeEnabled()
+            && _desktopIconPlacementService.AutoArrange(
+                desktopDiscovered, _layout.NativeDesktop.ManagedPositions))
+            ScheduleSave();
+        desktopDiscovered = desktopDiscovered
+            .OrderBy(item => _layout.NativeDesktop.ManagedPositions[item.Path].X)
+            .ThenBy(item => _layout.NativeDesktop.ManagedPositions[item.Path].Y)
+            .ToList();
+        var existingDesktop = DesktopItems.ToDictionary(item => item.Path, StringComparer.OrdinalIgnoreCase);
+        var desiredDesktop = desktopDiscovered.Select(item =>
         {
-            _refreshGate.Release();
+            if (!existingDesktop.TryGetValue(item.Path, out var current)) return item;
+            return DesktopItemRefreshService.Merge(current, item);
+        }).ToArray();
+        SynchronizeItems(DesktopItems, desiredDesktop);
+        foreach (var item in DesktopItems)
+        {
+            var position = _layout.NativeDesktop.ManagedPositions[item.Path];
+            _desktopSurface?.SetScreenPosition(item, position.X, position.Y);
         }
+        _ = LoadIconsAsync(DesktopItems, DesktopItems.Where(item => item.Icon is null || item.NeedsIconRefresh).ToArray());
+        await _recycleBinIcons.RefreshAsync(DesktopItems.Where(RecycleBinIconService.IsRecycleBin).ToArray());
+        if (_isExiting) return;
+        ApplyClipboardItemState();
+        _desktopSnapshot = snapshot;
     }
 
     private void EnsureDesktopPositions(IReadOnlyList<DesktopItem> items, bool useExplorerPositions)
@@ -830,7 +853,8 @@ public sealed class DesktopCoordinator : IDisposable
         ObservableCollection<DesktopItem> target,
         IReadOnlyCollection<DesktopItem> items)
     {
-        await Parallel.ForEachAsync(items, new ParallelOptions { MaxDegreeOfParallelism = 4 }, async (item, _) =>
+        await Parallel.ForEachAsync(items.Where(item => !RecycleBinIconService.IsRecycleBin(item)),
+            new ParallelOptions { MaxDegreeOfParallelism = 4 }, async (item, _) =>
         {
             var path = item.Path;
             var revision = item.LastWriteTicks;
@@ -847,23 +871,11 @@ public sealed class DesktopCoordinator : IDisposable
         });
     }
 
-    private static async Task RefreshRecycleBinIconsAsync(
-        IReadOnlyCollection<DesktopItem> items,
-        bool isEmpty)
-    {
-        if (items.Count == 0) return;
-        var icon = await Task.Run(() => ShellIconService.GetRecycleBinIcon(isEmpty));
-        if (icon is null) return;
-        await Application.Current.Dispatcher.InvokeAsync(() =>
-        {
-            foreach (var item in items) item.Icon = icon;
-        });
-    }
-
     private void DesktopFileService_DesktopChanged(object? sender, DesktopChangedEventArgs args)
     {
         Application.Current.Dispatcher.InvokeAsync(async () =>
         {
+            if (_isExiting) return;
             var externalRenames = args.Renames.Where(rename =>
             {
                 var oldPath = NativeDesktopService.NormalizePath(rename.OldPath);
@@ -871,20 +883,20 @@ public sealed class DesktopCoordinator : IDisposable
                 return !_expectedRenames.Remove(oldPath, out var expectedPath)
                        || !expectedPath.Equals(newPath, StringComparison.OrdinalIgnoreCase);
             }).ToArray();
-            if (args.Renames.Count > 0 && externalRenames.Length == 0) return;
+            if (args.Renames.Count > 0 && externalRenames.Length == 0 && !args.HasFileChanges) return;
+            // 外部改名统一在刷新锁内应用，避免后台枚举 Assignments 时修改同一字典。
+            _deferredDesktopRenames.AddRange(externalRenames);
             if (_renameInProgress || IsRenameEditing()
                 || Environment.TickCount64 <= _suppressWatcherRefreshUntil)
             {
                 _refreshDeferredByRename = true;
-                _deferredDesktopRenames.AddRange(externalRenames);
                 return;
             }
             if (_desktopBackgroundMenuActive)
             {
-                _deferredDesktopRenames.AddRange(externalRenames);
+                _refreshPending = true;
                 return;
             }
-            ApplyRenames(externalRenames);
             await RefreshAsync();
             _desktopSurface?.RefreshDesktopPlacement();
             foreach (var window in _windows.Values.Where(window => window.IsVisible))
@@ -897,7 +909,6 @@ public sealed class DesktopCoordinator : IDisposable
     {
         if (_desktopSurface is null || _desktopBackgroundMenuActive) return;
         _desktopBackgroundMenuActive = true;
-        _deferredDesktopRenames.Clear();
         await _refreshGate.WaitAsync();
         _refreshGate.Release();
         var pathsBeforeCommand = _nativeDesktopService.EnumerateDesktopItems()
@@ -1029,23 +1040,35 @@ public sealed class DesktopCoordinator : IDisposable
 
     private async Task ReconcileAsync()
     {
-        if (_isExiting || _desktopBackgroundMenuActive) return;
-        EnsureGroupWindowCoverage();
-        _desktopSurface?.RefreshDesktopPlacement();
-        foreach (var window in _windows.Values.Where(window => window.IsVisible))
-            window.RefreshDesktopPlacement();
-        if (_renameInProgress || IsRenameEditing()
-            || Environment.TickCount64 <= _suppressWatcherRefreshUntil) return;
-        if (_refreshDeferredByRename)
+        if (_isExiting || _desktopBackgroundMenuActive || _reconciling) return;
+        _reconciling = true;
+        try
         {
-            _refreshDeferredByRename = false;
-            ApplyRenames(_deferredDesktopRenames.ToArray());
-            _deferredDesktopRenames.Clear();
-            await RefreshAsync();
+            EnsureGroupWindowCoverage();
+            _desktopSurface?.RefreshDesktopPlacement();
+            foreach (var window in _windows.Values.Where(window => window.IsVisible))
+                window.RefreshDesktopPlacement();
+            _ = _recycleBinIcons.RefreshAsync(DesktopItems.Where(RecycleBinIconService.IsRecycleBin).ToArray());
+            if (_renameInProgress || IsRenameEditing()
+                || Environment.TickCount64 <= _suppressWatcherRefreshUntil) return;
+            if (_refreshDeferredByRename || _refreshPending)
+            {
+                _refreshDeferredByRename = false;
+                await RefreshAsync();
+                if (!_isExiting) _ = _nativeDesktopService.SetDesktopIconLayerVisible(false);
+                return;
+            }
+            var snapshot = await CaptureDesktopSnapshotAsync();
+            if (_isExiting) return;
+            if (!snapshot.Matches(_desktopSnapshot))
+            {
+                await RefreshAsync();
+                if (!_isExiting) _ = _nativeDesktopService.SetDesktopIconLayerVisible(false);
+                return;
+            }
             _ = _nativeDesktopService.SetDesktopIconLayerVisible(false);
-            return;
         }
-        _ = _nativeDesktopService.SetDesktopIconLayerVisible(false);
+        finally { _reconciling = false; }
     }
 
     private bool IsRenameEditing() => DesktopItems.Any(item => item.IsRenaming)
@@ -1438,8 +1461,11 @@ public sealed class DesktopCoordinator : IDisposable
     {
         if (_isExiting) return;
         _isExiting = true;
+        _recycleBinIcons.Stop();
         _saveTimer.Stop();
         _reconcileTimer.Stop();
+        await _renameGate.WaitAsync();
+        _renameGate.Release();
         RestoreNativePositions(_layout.NativeDesktop.Assignments.Keys);
         RestoreNativePositions(DesktopItems.Where(item => !item.IsVirtual).Select(item => item.Path));
         _ = _nativeDesktopService.SetDesktopIconLayerVisible(true);
@@ -1478,6 +1504,7 @@ public sealed class DesktopCoordinator : IDisposable
         if (_isDisposed) return;
         _isDisposed = true;
         _isExiting = true;
+        _recycleBinIcons.Stop();
         Microsoft.Win32.SystemEvents.DisplaySettingsChanged -= SystemDisplaySettingsChanged;
         Microsoft.Win32.SystemEvents.UserPreferenceChanged -= SystemDisplaySettingsChanged;
         _saveTimer.Stop();

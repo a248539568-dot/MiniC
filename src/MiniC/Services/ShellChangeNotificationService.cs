@@ -17,8 +17,11 @@ public sealed class ShellChangeNotificationService : IDisposable
         DisposeRegistrations();
         foreach (var path in directories.Distinct(StringComparer.OrdinalIgnoreCase))
         {
-            if (!Directory.Exists(path)
-                || SHParseDisplayName(path, IntPtr.Zero, out var pidl, 0, out _) < 0
+            var virtualItem = path.StartsWith("shell:::", StringComparison.OrdinalIgnoreCase);
+            var parsingName = virtualItem ? path["shell:".Length..] : path;
+            if ((!Directory.Exists(path)
+                 && !virtualItem)
+                || SHParseDisplayName(parsingName, IntPtr.Zero, out var pidl, 0, out _) < 0
                 || pidl == IntPtr.Zero) continue;
             var entry = new ShellChangeNotifyEntry(pidl, true);
             var id = SHChangeNotifyRegister(notificationWindow, ShellLevel | NewDelivery,

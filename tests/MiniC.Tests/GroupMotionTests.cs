@@ -230,7 +230,7 @@ public sealed class GroupMotionTests
         });
     }
 
-    private static async Task OnUiThread(Func<Task> action)
+    internal static async Task OnUiThread(Func<Task> action)
     {
         var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var thread = new Thread(() =>

@@ -4,7 +4,7 @@
 
 MiniC is a Windows 10/11 desktop organizer for desktop icon grouping, shortcut organization, and tabbed desktop boxes. Group files, folders, and shortcuts into independent boxes, merge boxes into tabs, or drag a tab out into its own box. Real files remain in the user's Desktop or Public Desktop directory.
 
-> Current version: `0.58.9`. Supports Windows 10 / Windows 11, x64. See the license status below.
+> Current version: `0.59.0`. Supports Windows 10 / Windows 11, x64. See the license status below.
 
 ## Who It Is For
 

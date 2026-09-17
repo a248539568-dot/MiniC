@@ -101,6 +101,7 @@ if ($LASTEXITCODE -ne 0) { throw "smoke test failed: $LASTEXITCODE" }
 | --- | --- |
 | `--multi-drag-layout-smoke-test` | 多选拖动布局与网格避让 |
 | `--rename-policy-smoke-test` | 文件名、扩展名和默认选区 |
+| `--rename-focus-smoke-test` | 桌面/收纳盒真实临时文件的失焦提交、Escape 取消、失败恢复与焦点保留 |
 | `--file-transfer-smoke-test` | 文件移动、复制和投放 |
 | `--group-organization-smoke-test` | 收纳盒排序、标签、外观和拓扑 |
 | `--marquee-selection-smoke-test` | 框选和 `Ctrl` 反选 |

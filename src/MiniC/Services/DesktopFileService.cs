@@ -15,13 +15,19 @@ public sealed class DesktopFileService : IDisposable
     private readonly System.Timers.Timer _changeTimer;
     private readonly object _changeLock = new();
     private readonly List<DesktopRename> _pendingRenames = [];
+    private bool _pendingFileChanges;
     private readonly string _userDesktop;
     private readonly string _publicDesktop;
+    private bool _disposed;
 
-    public DesktopFileService()
+    public DesktopFileService() : this(
+        Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
+        Environment.GetFolderPath(Environment.SpecialFolder.CommonDesktopDirectory)) { }
+
+    internal DesktopFileService(string userDesktop, string publicDesktop)
     {
-        _userDesktop = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
-        _publicDesktop = Environment.GetFolderPath(Environment.SpecialFolder.CommonDesktopDirectory);
+        _userDesktop = userDesktop;
+        _publicDesktop = publicDesktop;
         _changeTimer = new System.Timers.Timer(280) { AutoReset = false };
         _changeTimer.Elapsed += (_, _) => RaisePendingChanges();
     }
@@ -242,12 +248,12 @@ public sealed class DesktopFileService : IDisposable
 
     public bool StartWatching(IntPtr notificationWindow, uint notificationMessage)
     {
-        StopWatching();
-        if (_shellNotifications.Register(notificationWindow, notificationMessage,
-                [_userDesktop, _publicDesktop])) return true;
-        MiniCLogger.Warning(nameof(DesktopFileService),
-            "Shell change notification registration failed; using FileSystemWatcher fallback.");
+        // Photoshop 等程序直接写文件，不保证发送 Shell 通知，文件监听始终并行开启。
         StartWatching();
+        if (_shellNotifications.Register(notificationWindow, notificationMessage,
+                [_userDesktop, _publicDesktop, RecycleBinShellPath])) return true;
+        MiniCLogger.Warning(nameof(DesktopFileService),
+            "Shell change notification registration failed; file system watching remains active.");
         return false;
     }
 
@@ -264,14 +270,16 @@ public sealed class DesktopFileService : IDisposable
             var watcher = new FileSystemWatcher(path)
             {
                 IncludeSubdirectories = false,
-                NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName | NotifyFilters.LastWrite,
-                EnableRaisingEvents = true
+                NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName | NotifyFilters.LastWrite
+                               | NotifyFilters.Size | NotifyFilters.Attributes
             };
             watcher.Created += OnChanged;
             watcher.Deleted += OnChanged;
             watcher.Changed += OnChanged;
             watcher.Renamed += OnRenamed;
+            watcher.Error += OnWatcherError;
             _watchers.Add(watcher);
+            watcher.EnableRaisingEvents = true;
         }
         catch
         {
@@ -282,16 +290,28 @@ public sealed class DesktopFileService : IDisposable
 
     private void OnChanged(object sender, FileSystemEventArgs e) => QueueChange();
 
-    private void OnRenamed(object sender, RenamedEventArgs e)
+    private void OnWatcherError(object sender, ErrorEventArgs e)
     {
-        lock (_changeLock) _pendingRenames.Add(new DesktopRename(e.OldFullPath, e.FullPath));
+        MiniCLogger.Error(nameof(DesktopFileService), e.GetException(), "Desktop watcher error; schedule reconciliation.");
         QueueChange();
     }
 
-    private void QueueChange()
+    private void OnRenamed(object sender, RenamedEventArgs e)
     {
         lock (_changeLock)
         {
+            if (_disposed) return;
+            _pendingRenames.Add(new DesktopRename(e.OldFullPath, e.FullPath));
+        }
+        QueueChange(fileChange: false);
+    }
+
+    private void QueueChange(bool fileChange = true)
+    {
+        lock (_changeLock)
+        {
+            if (_disposed) return;
+            _pendingFileChanges |= fileChange;
             _changeTimer.Stop();
             _changeTimer.Start();
         }
@@ -300,12 +320,16 @@ public sealed class DesktopFileService : IDisposable
     private void RaisePendingChanges()
     {
         DesktopRename[] renames;
+        bool fileChanges;
         lock (_changeLock)
         {
+            if (_disposed) return;
             renames = _pendingRenames.ToArray();
             _pendingRenames.Clear();
+            fileChanges = _pendingFileChanges;
+            _pendingFileChanges = false;
         }
-        DesktopChanged?.Invoke(this, new DesktopChangedEventArgs(renames));
+        DesktopChanged?.Invoke(this, new DesktopChangedEventArgs(renames, fileChanges));
     }
 
     private static void AddVirtual(List<DesktopItem> items, string classId, string name, bool defaultVisible)
@@ -440,6 +464,13 @@ public sealed class DesktopFileService : IDisposable
 
     public void Dispose()
     {
+        lock (_changeLock)
+        {
+            if (_disposed) return;
+            _disposed = true;
+            _changeTimer.Stop();
+            _pendingRenames.Clear();
+        }
         StopWatching();
         _changeTimer.Dispose();
     }

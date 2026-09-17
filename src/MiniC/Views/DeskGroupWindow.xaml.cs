@@ -45,7 +45,7 @@ public partial class DeskGroupWindow : Window
     private System.Windows.Point _windowDragOrigin;
     private bool _isMovingWindow;
     private bool _allowClose;
-    private bool _renameCommitRunning;
+    private readonly InlineFileRenameSession _renameSession = new();
     private bool _transientPopupOpen;
     private ContextMenu? _groupMenu;
     private DesktopItem[] _draggedItems = [];
@@ -127,6 +127,8 @@ public partial class DeskGroupWindow : Window
     private void SwitchGroup(DeskGroup group)
     {
         if (!_tabMembers.Contains(group)) return;
+        foreach (var item in _tabMembers.SelectMany(member => member.Items).Where(item => item.IsRenaming))
+            _ = CommitRenameAsync(item, restoreFocus: false);
         foreach (var member in _tabMembers)
         {
             member.IsActive = ReferenceEquals(member, group);
@@ -163,9 +165,11 @@ public partial class DeskGroupWindow : Window
     public void BeginRename(DesktopItem item)
     {
         if (!Group.Items.Contains(item)) return;
+        if (_renameSession.IsCommitting(item)) return;
         _openGestureTracker.Reset();
+        foreach (var candidate in Group.Items.Where(candidate => candidate.IsRenaming && !ReferenceEquals(candidate, item)))
+            _ = CommitRenameAsync(candidate, restoreFocus: false);
         SetActivationEnabled(true);
-        foreach (var candidate in Group.Items) candidate.IsRenaming = false;
         item.EditName = DesktopFileService.GetRenameEditName(item);
         item.IsRenaming = true;
         Dispatcher.BeginInvoke(() =>
@@ -243,6 +247,18 @@ public partial class DeskGroupWindow : Window
         && Math.Abs(ItemsScroller.Opacity - 1) < 0.001
         && Math.Abs(GroupTitleArea.Opacity - 1) < 0.001;
 
+    internal async Task<bool> WaitForMergeDropVisualForSmokeTestAsync(bool active)
+    {
+        var deadline = Environment.TickCount64 + 1500;
+        while (Environment.TickCount64 < deadline)
+        {
+            if (active ? IsMergeDropVisualActive && MergeDropOverlay.Opacity >= 0.98
+                       : MergeDropOverlay.Opacity <= 0.02) return true;
+            await Task.Delay(16);
+        }
+        return false;
+    }
+
     internal static bool ValidateTabDropIntentForSmokeTest() =>
         TabDragPolicy.ResolveIntent(TabDragMode.Reorder, false, true) == TabDropIntent.Reorder
         && TabDragPolicy.ResolveIntent(TabDragMode.Transfer, true, false) == TabDropIntent.Reorder
@@ -284,7 +300,9 @@ public partial class DeskGroupWindow : Window
         var destination = bounds;
         destination.Offset(bounds.Width + 40, 18);
         preview.Follow(destination.TopLeft);
-        await Task.Delay(170);
+        var deadline = Environment.TickCount64 + 1500;
+        while ((preview.PreviewBounds.TopLeft - destination.TopLeft).Length >= 1 && Environment.TickCount64 < deadline)
+            await Task.Delay(16);
         var separated = (preview.PreviewBounds.TopLeft - destination.TopLeft).Length < 1
                         && preview.PreviewBounds.Size == bounds.Size;
         var completed = await preview.CompleteAsync(bounds, merge: true);
@@ -298,6 +316,49 @@ public partial class DeskGroupWindow : Window
     internal bool ValidateHeaderDragPolicyForSmokeTest() =>
         ShouldStartHeaderDrag(GroupTitleArea, clickCount: 1)
         && !ShouldStartHeaderDrag(GroupTitleArea, clickCount: 2);
+
+    internal async Task<bool> ValidateHeaderActivationForSmokeTestAsync(string? outputDirectory)
+    {
+        var bounds = new Rect(Left, Top, Width, Height);
+        var competitor = new Window { Width = 1, Height = 1, Opacity = 0, ShowInTaskbar = false };
+        try
+        {
+            competitor.Show();
+            var targets = new List<UIElement> { GroupHeader, GroupTitleArea, GroupMenuButton };
+            var tabContainer = TabsHost.ItemContainerGenerator.ContainerFromItem(Group);
+            var tab = tabContainer is null ? null : FindVisualChild<Button>(tabContainer);
+            if (tab is not null) targets.Add(tab);
+            foreach (var target in targets)
+            {
+                competitor.Activate();
+                SetActivationEnabled(false);
+                await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
+                if (IsActive) return false;
+                target.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, Environment.TickCount, MouseButton.Left)
+                { RoutedEvent = Mouse.PreviewMouseDownEvent });
+                await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
+                var activated = IsActive;
+                (ReferenceEquals(target, tab) ? target : GroupHeader).RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, Environment.TickCount, MouseButton.Left)
+                { RoutedEvent = Mouse.PreviewMouseUpEvent });
+                if (!activated || _isMovingWindow || _draggedTab is not null
+                    || new Rect(Left, Top, Width, Height) != bounds) return false;
+            }
+            if (!string.IsNullOrWhiteSpace(outputDirectory))
+            {
+                Directory.CreateDirectory(outputDirectory);
+                var bitmap = new System.Windows.Media.Imaging.RenderTargetBitmap(
+                    (int)Math.Ceiling(GroupShell.ActualWidth), (int)Math.Ceiling(GroupShell.ActualHeight),
+                    96, 96, PixelFormats.Pbgra32);
+                bitmap.Render(GroupShell);
+                var encoder = new System.Windows.Media.Imaging.PngBitmapEncoder();
+                encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(bitmap));
+                using var output = File.Create(Path.Combine(outputDirectory, "header-activation.png"));
+                encoder.Save(output);
+            }
+            return true;
+        }
+        finally { competitor.Close(); }
+    }
 
     internal bool ValidateLiquidAppearanceMenuForSmokeTest()
     {
@@ -362,7 +423,7 @@ public partial class DeskGroupWindow : Window
         return works;
     }
 
-    public void ClearTransientState(bool cancelRename = true)
+    public void ClearTransientState(bool commitRename = true)
     {
         _openGestureTracker.Reset();
         _marqueeSelection.Cancel();
@@ -370,7 +431,8 @@ public partial class DeskGroupWindow : Window
         {
             item.IsSelected = false;
             item.IsDropTarget = false;
-            if (cancelRename) item.IsRenaming = false;
+            if (commitRename && item.IsRenaming && !_renameSession.IsCommitting(item))
+                _ = CommitRenameAsync(item, restoreFocus: false);
         }
         foreach (var member in _tabMembers) member.IsRenaming = false;
         if (_groupMenu is not null) _groupMenu.IsOpen = false;
@@ -464,9 +526,15 @@ public partial class DeskGroupWindow : Window
     private void Header_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
         if (_isCompletingGroupDrag) { e.Handled = true; return; }
-        if (!ShouldStartHeaderDrag(e.OriginalSource as DependencyObject, e.ClickCount)) return;
+        _callbacks.InteractionStarted(Group);
+        if (!ShouldStartHeaderDrag(e.OriginalSource as DependencyObject, e.ClickCount))
+        {
+            SetActivationEnabled(true);
+            return;
+        }
         if (e.ClickCount == 2)
         {
+            SetActivationEnabled(true);
             ToggleCollapsed();
             e.Handled = true;
             return;
@@ -474,6 +542,7 @@ public partial class DeskGroupWindow : Window
         _isMovingWindow = true;
         _windowDragScreenStart = PointToScreen(e.GetPosition(this));
         _windowDragOrigin = new System.Windows.Point(Left, Top);
+        SetActivationEnabled(true);
         ((UIElement)sender).CaptureMouse();
         e.Handled = true;
     }
@@ -647,6 +716,7 @@ public partial class DeskGroupWindow : Window
         _tabDragOrigin = e.GetPosition(this);
         _tabSourceScreenBounds = GetMergeDropScreenBounds();
         _tabDragMode = TabDragMode.Pending;
+        SetActivationEnabled(true);
         tab.CaptureMouse();
         e.Handled = true;
     }
@@ -925,7 +995,7 @@ public partial class DeskGroupWindow : Window
         if (FindAncestor<TextBox>(e.OriginalSource as DependencyObject) is not null) return;
         var item = _tabMembers.SelectMany(group => group.Items)
             .FirstOrDefault(candidate => candidate.IsRenaming);
-        if (item is not null) CancelRename(item);
+        if (item is not null) _ = CommitRenameAsync(item, restoreFocus: false);
     }
 
     private async void RenameBox_PreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
@@ -943,35 +1013,26 @@ public partial class DeskGroupWindow : Window
         }
     }
 
-    private void RenameBox_LostKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e)
+    private async void RenameBox_LostKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e)
     {
-        if (!_renameCommitRunning && sender is TextBox { DataContext: DesktopItem item } && item.IsRenaming)
-            CancelRename(item);
+        if (sender is TextBox { DataContext: DesktopItem item } editor
+            && item.IsRenaming && !editor.IsKeyboardFocusWithin && !_renameSession.IsCommitting(item))
+            await CommitRenameAsync(item, restoreFocus: false);
     }
 
     private void CancelRename(DesktopItem item)
     {
-        item.IsRenaming = false;
-        item.EditName = DesktopFileService.GetRenameEditName(item);
-        Keyboard.Focus(SelectionSurface);
+        if (_renameSession.Cancel(item)) Keyboard.Focus(SelectionSurface);
     }
 
-    private async Task CommitRenameAsync(DesktopItem item)
+    private async Task CommitRenameAsync(DesktopItem item, bool restoreFocus = true)
     {
-        if (_renameCommitRunning || !item.IsRenaming) return;
-        _renameCommitRunning = true;
-        try
-        {
-            if (await _callbacks.RenameItemAsync(Group, item, item.EditName))
-            {
-                item.IsRenaming = false;
-                Keyboard.Focus(SelectionSurface);
-            }
-        }
-        finally
-        {
-            _renameCommitRunning = false;
-        }
+        if (!item.IsRenaming) return;
+        var owner = _tabMembers.FirstOrDefault(member => member.Items.Contains(item)) ?? Group;
+        var succeeded = await _renameSession.CommitAsync(item,
+            name => _callbacks.RenameItemAsync(owner, item, name), keepEditingOnFailure: restoreFocus);
+        if (succeeded && restoreFocus && IsActive && Keyboard.FocusedElement is TextBox { DataContext: DesktopItem focused }
+            && ReferenceEquals(focused, item)) Keyboard.Focus(SelectionSurface);
     }
 
     private void Window_DragOver(object sender, System.Windows.DragEventArgs e)
