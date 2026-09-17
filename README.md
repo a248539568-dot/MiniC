@@ -6,6 +6,12 @@ MiniC 是一款面向 Windows 10/11 的桌面整理软件（Windows desktop orga
 
 > 当前版本：`0.59.0`。支持 Windows 10 / Windows 11，x64。许可证状态见文末。
 
+## 下载
+
+[下载 Windows x64 安装包](https://github.com/a248539568-dot/MiniC/releases/download/v0.59.0/MiniC-Setup-v0.59.0.exe) · [更新说明与 SHA-256 校验文件](https://github.com/a248539568-dot/MiniC/releases/latest)
+
+安装包自带 .NET 运行时，无需另外安装。开发者可按下方说明从源码构建。
+
 ## 适用场景
 
 - 桌面图标太多：把工作文档、常用软件快捷方式和项目文件分组放入不同收纳盒。

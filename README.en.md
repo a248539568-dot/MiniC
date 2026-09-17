@@ -6,6 +6,12 @@ MiniC is a Windows 10/11 desktop organizer for desktop icon grouping, shortcut o
 
 > Current version: `0.59.0`. Supports Windows 10 / Windows 11, x64. See the license status below.
 
+## Download
+
+[Windows x64 installer](https://github.com/a248539568-dot/MiniC/releases/download/v0.59.0/MiniC-Setup-v0.59.0.exe) · [Release notes and SHA-256 checksums](https://github.com/a248539568-dot/MiniC/releases/latest)
+
+The installer includes the .NET runtime. Developers can build from source using the instructions below.
+
 ## Who It Is For
 
 - People with crowded desktops who want to group work documents, app shortcuts, and project files.
