@@ -53,6 +53,8 @@ public sealed class GroupMotionTests
                     for (var channel = 0; channel < 4; channel++) Assert.InRange(Math.Abs(first[channel]-second[channel]), 0, 2);
                 }
                 var surface = (GroupTransitionSurface)detached.Content;
+                detached.InitializePose(new Point(18, 24), new Point(42, 52), 0.38);
+                Assert.Equal(1, surface.PreviewScale);
                 var bodyPixel = new byte[4];
                 actual.CopyPixels(new Int32Rect(15, 54, 1, 1), bodyPixel, 4, 0);
                 Assert.True(bodyPixel[2] > 240 && bodyPixel[1] < 10, "Body offset must be applied once after removing the tab strip.");

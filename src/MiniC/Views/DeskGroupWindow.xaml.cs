@@ -1311,7 +1311,7 @@ public partial class DeskGroupWindow : DesktopBoxWindow
                     new Rect(Left, Top, Width, Height), Group.GlassBackground,
                     TabsHeight, bounds.Size, ItemsScroller, GroupMaterial, GroupHeader);
                 _mixedTabPreview = preview;
-                preview.InitializePose(bounds.TopLeft, anchor, GroupDragMinimumScale);
+                preview.InitializePose(bounds.TopLeft, anchor, 1);
                 preview.Show();
             }
             catch (Exception error)

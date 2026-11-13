@@ -24,8 +24,7 @@ internal sealed class GroupDragPreviewWindow : Window
     private Point? _pendingPosition;
     private Vector _pendingAnchor;
     private bool _renderingSubscribed;
-    private double _targetScale = 1;
-    private TimeSpan? _lastFrame;
+    private double _pendingScale = 1;
     private GlassMaterialSurface? _glassLayer;
     private System.Windows.Controls.Canvas? _glassCanvas;
     private readonly MatrixTransform _glassTransform = new();
@@ -196,8 +195,10 @@ internal sealed class GroupDragPreviewWindow : Window
         if (IsLoaded) throw new InvalidOperationException("Initialize the preview before showing it.");
         _surface.CardPosition = position;
         _surface.ScaleAnchor = GetAnchor(position, pointer);
-        _surface.PreviewScale = Math.Clamp(scale, 0.38, 1);
-        _targetScale = _surface.PreviewScale;
+        // The detached card starts at its final size. A growing card changes the
+        // transparent host bounds while the pointer is moving and reads as a wobble.
+        _surface.PreviewScale = 1;
+        _pendingScale = 1;
         UpdateBounds(new Rect(position, _surface.CardSize));
     }
 
@@ -217,9 +218,10 @@ internal sealed class GroupDragPreviewWindow : Window
             BeginAnimation(OpacityProperty, new DoubleAnimation(visible ? 1 : 0,
                 TimeSpan.FromMilliseconds(SystemParameters.ClientAreaAnimation ? 150 : 1)));
         }
-        _targetScale = Math.Clamp(scale, 0.38, 1);
+        _pendingScale = Math.Clamp(scale, 0.38, 1);
         _pendingAnchor = GetAnchor(position, pointer);
-        // 合并同一帧内的鼠标输入；拖动位置直接跟手，不不断重启 EaseOut 追赶鼠标。
+        // Coalesce position, anchor, and scale. The render callback commits one
+        // stable pose; it never starts a chase animation for a moving pointer.
         _pendingPosition = position;
         StartRendering();
     }
@@ -235,21 +237,13 @@ internal sealed class GroupDragPreviewWindow : Window
 
     private void RenderPointerPosition(object? sender, EventArgs e)
     {
-        if (e is not RenderingEventArgs frame || _lastFrame == frame.RenderingTime) return;
-        var seconds = _lastFrame is { } previous ? (frame.RenderingTime - previous).TotalSeconds : 1d / 60;
-        _lastFrame = frame.RenderingTime;
+        if (e is not RenderingEventArgs) return;
         FlushPointerPosition();
-        var current = _surface.PreviewScale;
-        var next = SystemParameters.ClientAreaAnimation
-            ? current + (_targetScale - current) * (1 - Math.Exp(-Math.Clamp(seconds, 0, 0.1) / 0.055))
-            : _targetScale;
-        _surface.PreviewScale = Math.Abs(next - _targetScale) < 0.001 ? _targetScale : next;
         UpdateBounds(new Rect(_surface.CardPosition, _surface.CardSize));
-        if (_pendingPosition is null && Math.Abs(_surface.PreviewScale - _targetScale) < 0.001)
+        if (_pendingPosition is null)
         {
             CompositionTarget.Rendering -= RenderPointerPosition;
             _renderingSubscribed = false;
-            _lastFrame = null;
         }
     }
 
@@ -259,6 +253,7 @@ internal sealed class GroupDragPreviewWindow : Window
         _pendingPosition = null;
         _surface.ScaleAnchor = _pendingAnchor;
         _surface.CardPosition = position;
+        _surface.PreviewScale = _pendingScale;
         _surface.InvalidateVisual();
     }
 
@@ -266,7 +261,6 @@ internal sealed class GroupDragPreviewWindow : Window
     {
         if (_renderingSubscribed) CompositionTarget.Rendering -= RenderPointerPosition;
         _renderingSubscribed = false;
-        _lastFrame = null;
         _pendingPosition = null;
     }
 

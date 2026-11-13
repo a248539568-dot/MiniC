@@ -1,7 +1,7 @@
 #define AppName "MiniC"
-#define AppVersion "0.60.82"
+#define AppVersion "0.60.83"
 #define AppExeName "MiniC.exe"
-#define PublishDir "..\dist\MiniC-v0.60.82-win-x64"
+#define PublishDir "..\dist\MiniC-v0.60.83-win-x64"
 
 [Setup]
 AppId={{B9E2891D-9EC8-4C33-8B0B-58F25767C4D1}
