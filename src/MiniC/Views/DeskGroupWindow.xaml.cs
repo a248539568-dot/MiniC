@@ -32,7 +32,7 @@ public partial class DeskGroupWindow : DesktopBoxWindow
     private const int MinimumHeight = 170;
     private const double HeaderHeight = 42;
     private const double TabsHeight = 34;
-    private const int GroupDragTransitionMilliseconds = 220;
+    private const int GroupDragTransitionMilliseconds = 180;
     private const int GroupDragReleaseMilliseconds = 260;
     private const double GroupDragMinimumScale = 0.38;
 
@@ -77,6 +77,12 @@ public partial class DeskGroupWindow : DesktopBoxWindow
     private int _boxReturnVersion;
     private bool _isMovingWindow;
     private bool _windowDragHasMoved;
+    private bool _dragMoveRenderingSubscribed;
+    private bool _pendingDragMove;
+    private int _pendingDragX;
+    private int _pendingDragY;
+    private bool _boxTransferTargetReady;
+    private bool _backdropAlignmentRenderingSubscribed;
     private readonly BoxMergeGesture _boxMergeGesture = new();
     private readonly DispatcherTimer _boxMergeTimer = new() { Interval = TimeSpan.FromMilliseconds(50) };
     private BoxTabRef? _boxDragTarget;
@@ -134,6 +140,8 @@ public partial class DeskGroupWindow : DesktopBoxWindow
         {
             _windowClosed = true;
             _boxMergeTimer.Stop();
+            StopPendingDraggedWindowMove();
+            StopQueuedBackdropAlignment();
             ResetBoxTransferScale();
             ResetMixedTabDragPreview();
             Group.PropertyChanged -= GroupAppearanceChanged;
@@ -180,10 +188,14 @@ public partial class DeskGroupWindow : DesktopBoxWindow
         Height = Math.Max(MinimumHeight, Group.Height);
         _tabMembers.Add(group);
         SwitchGroup(group);
-        LocationChanged += (_, _) => { if (!_isMovingWindow && !_returningBoxToOrigin) SynchronizeBounds(); AlignBackdrops(); };
-        SizeChanged += (_, _) => { SynchronizeBounds(); UpdateMaterialClip(); AlignBackdrops(); };
+        LocationChanged += (_, _) =>
+        {
+            if (!_isMovingWindow && !_returningBoxToOrigin) SynchronizeBounds();
+            QueueBackdropAlignment();
+        };
+        SizeChanged += (_, _) => { SynchronizeBounds(); UpdateMaterialClip(); QueueBackdropAlignment(); };
         IsVisibleChanged += (_, _) => UpdateBackdrop();
-        Activated += (_, _) => AlignBackdrops();
+        Activated += (_, _) => QueueBackdropAlignment();
         Activated += (_, _) => { if (ActiveWidget is { Kind: WidgetKind.Calendar } && _hostState?.ActiveTab is { } tab)
             _widgetContents[tab.Id].RenderBody(); };
     }
@@ -681,6 +693,26 @@ public partial class DeskGroupWindow : DesktopBoxWindow
         SolidBackdrop.InvalidateBackdrop();
     }
 
+    private void QueueBackdropAlignment()
+    {
+        if (_windowClosed || _backdropAlignmentRenderingSubscribed) return;
+        _backdropAlignmentRenderingSubscribed = true;
+        CompositionTarget.Rendering += RenderQueuedBackdropAlignment;
+    }
+
+    private void RenderQueuedBackdropAlignment(object? sender, EventArgs e)
+    {
+        StopQueuedBackdropAlignment();
+        if (!_windowClosed) AlignBackdrops();
+    }
+
+    private void StopQueuedBackdropAlignment()
+    {
+        if (!_backdropAlignmentRenderingSubscribed) return;
+        CompositionTarget.Rendering -= RenderQueuedBackdropAlignment;
+        _backdropAlignmentRenderingSubscribed = false;
+    }
+
     protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs args)
     {
         base.OnPropertyChanged(args);
@@ -803,6 +835,7 @@ public partial class DeskGroupWindow : DesktopBoxWindow
 
     public void ClearTransientState(bool commitRename = true)
     {
+        StopPendingDraggedWindowMove();
         _composedCrystalBackdrop?.FinishMove();
         if (_returningBoxToOrigin) CancelBoxReturnAnimation();
         _openGestureTracker.Reset();
@@ -990,10 +1023,53 @@ public partial class DeskGroupWindow : DesktopBoxWindow
             x = aligned.X;
             y = aligned.Y;
         }
-        var physicalX = (int)Math.Round(x);
-        var physicalY = (int)Math.Round(y);
-        if (_composedCrystalBackdrop?.RequestMove(physicalX, physicalY) != true)
-            NativeWindowPlacement.Move(handle, physicalX, physicalY);
+        _pendingDragX = (int)Math.Round(x);
+        _pendingDragY = (int)Math.Round(y);
+        _pendingDragMove = true;
+        if (_dragMoveRenderingSubscribed) return;
+        _dragMoveRenderingSubscribed = true;
+        CompositionTarget.Rendering += RenderDraggedWindowMove;
+    }
+
+    private void RenderDraggedWindowMove(object? sender, EventArgs e)
+    {
+        if (!_pendingDragMove)
+        {
+            StopPendingDraggedWindowMove();
+            return;
+        }
+        var x = _pendingDragX;
+        var y = _pendingDragY;
+        _pendingDragMove = false;
+        ApplyDraggedWindowMove(x, y);
+        QueueBackdropAlignment();
+        if (!_pendingDragMove) StopPendingDraggedWindowMove();
+    }
+
+    private void FlushDraggedWindowMove()
+    {
+        if (_pendingDragMove)
+        {
+            _pendingDragMove = false;
+            ApplyDraggedWindowMove(_pendingDragX, _pendingDragY);
+        }
+        StopPendingDraggedWindowMove();
+        QueueBackdropAlignment();
+    }
+
+    private void ApplyDraggedWindowMove(int x, int y)
+    {
+        var handle = new WindowInteropHelper(this).Handle;
+        if (_composedCrystalBackdrop?.RequestMove(x, y) != true)
+            NativeWindowPlacement.Move(handle, x, y);
+    }
+
+    private void StopPendingDraggedWindowMove()
+    {
+        if (_dragMoveRenderingSubscribed)
+            CompositionTarget.Rendering -= RenderDraggedWindowMove;
+        _dragMoveRenderingSubscribed = false;
+        _pendingDragMove = false;
     }
 
     private void Header_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
@@ -1004,6 +1080,7 @@ public partial class DeskGroupWindow : DesktopBoxWindow
         var source = _hostState?.ActiveTab ?? new BoxTabRef(BoxContentKind.DesktopGroup, Group.Id);
         var destination = _windowDragHasMoved ? GetReadyBoxMergeTarget(source, pointer) : null;
         if (_windowDragHasMoved) MoveDraggedWindow(pointer, snap: destination is null);
+        FlushDraggedWindowMove();
         _composedCrystalBackdrop?.FinishMove();
         _isMovingWindow = false;
         ResetBoxMergeIntent();
@@ -1025,6 +1102,7 @@ public partial class DeskGroupWindow : DesktopBoxWindow
     private void Header_LostMouseCapture(object sender, System.Windows.Input.MouseEventArgs e)
     {
         if (!_isMovingWindow) return;
+        FlushDraggedWindowMove();
         _composedCrystalBackdrop?.FinishMove();
         _isMovingWindow = false;
         ResetBoxMergeIntent();
@@ -1136,48 +1214,47 @@ public partial class DeskGroupWindow : DesktopBoxWindow
     {
         if (!ready)
         {
-            AnimateBoxTransferReset();
+            if (_boxTransferScale is null || !_boxTransferTargetReady) return;
+            _boxTransferTargetReady = false;
+            AnimateTransformDouble(_boxTransferScale, ScaleTransform.ScaleXProperty, 1, GroupDragTransitionMilliseconds);
+            AnimateTransformDouble(_boxTransferScale, ScaleTransform.ScaleYProperty, 1, GroupDragTransitionMilliseconds);
             return;
         }
         if (!SystemParameters.ClientAreaAnimation) return;
         if (_boxTransferScale is null)
         {
             _boxTransferScale = new ScaleTransform(1, 1);
-            _boxTransferScale.Changed += (_, _) => AlignBackdrops();
+            _boxTransferScale.Changed += (_, _) => QueueBackdropAlignment();
             GroupShell.RenderTransformOrigin = new System.Windows.Point(0.5, 0.5);
             GroupShell.RenderTransform = _boxTransferScale;
-            AnimateTransformDouble(_boxTransferScale, ScaleTransform.ScaleXProperty,
-                GroupDragMinimumScale, GroupDragTransitionMilliseconds);
-            AnimateTransformDouble(_boxTransferScale, ScaleTransform.ScaleYProperty,
-                GroupDragMinimumScale, GroupDragTransitionMilliseconds);
-            return;
         }
         if (!ReferenceEquals(GroupShell.RenderTransform, _boxTransferScale))
         {
             GroupShell.RenderTransformOrigin = new System.Windows.Point(0.5, 0.5);
             GroupShell.RenderTransform = _boxTransferScale;
         }
+        if (_boxTransferTargetReady) return;
+        _boxTransferTargetReady = true;
+        AnimateTransformDouble(_boxTransferScale, ScaleTransform.ScaleXProperty,
+            GroupDragMinimumScale, GroupDragTransitionMilliseconds);
+        AnimateTransformDouble(_boxTransferScale, ScaleTransform.ScaleYProperty,
+            GroupDragMinimumScale, GroupDragTransitionMilliseconds);
     }
 
     private void ResetBoxTransferScale()
     {
         if (_boxTransferScale is null) return;
+        _boxTransferTargetReady = false;
+        _boxTransferScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
+        _boxTransferScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
         _boxTransferScale = null;
         if (!_windowClosed) GroupShell.RenderTransform = Transform.Identity;
-        if (!_windowClosed) AlignBackdrops();
+        if (!_windowClosed) QueueBackdropAlignment();
     }
 
     private void AnimateBoxTransferReset()
     {
-        if (_boxTransferScale is null) return;
-        var scale = _boxTransferScale;
-        _boxTransferScale = null;
-        if (IsLoaded && IsVisible && !_windowClosed && SystemParameters.ClientAreaAnimation)
-        {
-            AnimateTransformDouble(scale, ScaleTransform.ScaleXProperty, 1, GroupDragTransitionMilliseconds);
-            AnimateTransformDouble(scale, ScaleTransform.ScaleYProperty, 1, GroupDragTransitionMilliseconds);
-        }
-        else if (!_windowClosed) GroupShell.RenderTransform = Transform.Identity;
+        UpdateBoxTransferScale(ready: false);
     }
 
     private void UpdateMixedTabDragPreview(System.Windows.Point pointer, BoxTabRef? target)
@@ -1564,6 +1641,7 @@ public partial class DeskGroupWindow : DesktopBoxWindow
     {
         if (e.Key == Key.Escape && (_mixedDragTab is not null || _isMovingWindow))
         {
+            StopPendingDraggedWindowMove();
             _composedCrystalBackdrop?.FinishMove(applyLatest: false);
             var cancelWindowMove = _isMovingWindow;
             if (_hostState?.ActiveTab is { } activeTab) SetBoxDragTarget(_mixedDragTab ?? activeTab, null);

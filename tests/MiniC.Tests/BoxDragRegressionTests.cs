@@ -128,6 +128,8 @@ public sealed class BoxDragRegressionTests
                 var center = BoxDropGeometry.Center(new Rect(0, 0, width, height));
                 Assert.Equal(center.Width, overlay.Width, 3);
                 Assert.Equal(center.Height, overlay.Height, 3);
+                Assert.Equal(0, overlay.BorderThickness.Left);
+                Assert.Equal(0, overlay.BorderThickness.Top);
                 Assert.Equal((double)width, shell.ActualWidth);
                 Assert.Equal((double)height, shell.ActualHeight);
                 var label = (TextBlock)((Border)overlay.Child).Child;
@@ -140,6 +142,28 @@ public sealed class BoxDragRegressionTests
                 encoder.Save(file);
                 Assert.False(fixture.Window.IsVisible);
             }
+        });
+    }
+
+    [Fact]
+    public async Task WholeBoxMoveKeepsOnlyTheLatestPointerPositionPerFrame()
+    {
+        await GroupMotionTests.OnUiThread(() =>
+        {
+            using var fixture = new Fixture();
+            fixture.PrepareMove();
+            var start = fixture.Get<Point>("_windowDragScreenStart");
+            fixture.Invoke("MoveDraggedWindow", new Point(start.X + 40, start.Y + 20), true);
+            fixture.Invoke("MoveDraggedWindow", new Point(start.X + 120, start.Y + 80), true);
+
+            Assert.True(fixture.Get<bool>("_pendingDragMove"));
+            Assert.Equal(120, fixture.Get<int>("_pendingDragX") - fixture.Get<Point>("_windowDragPhysicalOrigin").X);
+            Assert.Equal(80, fixture.Get<int>("_pendingDragY") - fixture.Get<Point>("_windowDragPhysicalOrigin").Y);
+
+            fixture.Invoke("RenderDraggedWindowMove", new object(), EventArgs.Empty);
+            Assert.False(fixture.Get<bool>("_pendingDragMove"));
+            Assert.False(fixture.Get<bool>("_dragMoveRenderingSubscribed"));
+            return Task.CompletedTask;
         });
     }
 

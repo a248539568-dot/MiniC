@@ -570,7 +570,7 @@
 
             <Border x:Name="MergeDropOverlay" Grid.RowSpan="3" Panel.ZIndex="30"
                     HorizontalAlignment="Left" VerticalAlignment="Top"
-                    CornerRadius="7" BorderThickness="1.5" BorderBrush="{Binding ItemSelectedBorder}"
+                    CornerRadius="7" BorderThickness="0" BorderBrush="Transparent"
                     Background="Transparent" Opacity="0" IsHitTestVisible="False">
                 <Border HorizontalAlignment="Center" VerticalAlignment="Center" Padding="12,3"
                         CornerRadius="6" Background="#E6222936">
