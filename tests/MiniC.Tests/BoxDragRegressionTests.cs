@@ -167,6 +167,33 @@ public sealed class BoxDragRegressionTests
         });
     }
 
+    [Fact]
+    public async Task MergeScaleKeepsTheGrabPointAndReusesOneRenderState()
+    {
+        await GroupMotionTests.OnUiThread(() =>
+        {
+            using var fixture = new Fixture();
+            var shell = (Border)fixture.Window.FindName("GroupShell");
+            shell.Measure(new Size(340, 380));
+            shell.Arrange(new Rect(0, 0, 340, 380));
+            shell.UpdateLayout();
+
+            fixture.Invoke("SetBoxTransferAnchor", new Point(34, 76));
+            Assert.Equal(34d / shell.ActualWidth, shell.RenderTransformOrigin.X, 3);
+            Assert.Equal(76d / shell.ActualHeight, shell.RenderTransformOrigin.Y, 3);
+
+            fixture.Invoke("UpdateBoxTransferScale", true);
+            var scale = fixture.Get<ScaleTransform>("_boxTransferScale");
+            fixture.Invoke("UpdateBoxTransferScale", true);
+            Assert.Same(scale, fixture.Get<ScaleTransform>("_boxTransferScale"));
+            Assert.True(fixture.Get<bool>("_boxTransferScaleRenderingSubscribed"));
+
+            fixture.Invoke("UpdateBoxTransferScale", false);
+            Assert.False(fixture.Get<bool>("_boxTransferTargetReady"));
+            return Task.CompletedTask;
+        });
+    }
+
     private sealed class Fixture : IDisposable
     {
         private readonly string _root = Path.Combine(Path.GetTempPath(), "MiniC-BoxDrag-" + Guid.NewGuid().ToString("N"));

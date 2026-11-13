@@ -83,6 +83,9 @@ public partial class DeskGroupWindow : DesktopBoxWindow
     private int _pendingDragY;
     private bool _boxTransferTargetReady;
     private bool _backdropAlignmentRenderingSubscribed;
+    private bool _boxTransferScaleRenderingSubscribed;
+    private TimeSpan? _lastBoxTransferScaleFrame;
+    private double _boxTransferScaleTarget = 1;
     private readonly BoxMergeGesture _boxMergeGesture = new();
     private readonly DispatcherTimer _boxMergeTimer = new() { Interval = TimeSpan.FromMilliseconds(50) };
     private BoxTabRef? _boxDragTarget;
@@ -142,6 +145,7 @@ public partial class DeskGroupWindow : DesktopBoxWindow
             _boxMergeTimer.Stop();
             StopPendingDraggedWindowMove();
             StopQueuedBackdropAlignment();
+            StopBoxTransferScaleAnimation();
             ResetBoxTransferScale();
             ResetMixedTabDragPreview();
             Group.PropertyChanged -= GroupAppearanceChanged;
@@ -973,6 +977,7 @@ public partial class DeskGroupWindow : DesktopBoxWindow
         if (_returningBoxToOrigin) CancelBoxReturnAnimation();
         _isMovingWindow = true;
         _windowDragHasMoved = false;
+        SetBoxTransferAnchor(e.GetPosition(GroupShell));
         _windowDragScreenStart = PointToScreen(e.GetPosition(this));
         BeginBoxMergeIntent(_hostState?.ActiveTab ?? new BoxTabRef(BoxContentKind.DesktopGroup, Group.Id),
             _windowDragScreenStart);
@@ -1212,41 +1217,71 @@ public partial class DeskGroupWindow : DesktopBoxWindow
 
     private void UpdateBoxTransferScale(bool ready)
     {
-        if (!ready)
-        {
-            if (_boxTransferScale is null || !_boxTransferTargetReady) return;
-            _boxTransferTargetReady = false;
-            AnimateTransformDouble(_boxTransferScale, ScaleTransform.ScaleXProperty, 1, GroupDragTransitionMilliseconds);
-            AnimateTransformDouble(_boxTransferScale, ScaleTransform.ScaleYProperty, 1, GroupDragTransitionMilliseconds);
-            return;
-        }
         if (!SystemParameters.ClientAreaAnimation) return;
-        if (_boxTransferScale is null)
+        if (_boxTransferScale is null && ready)
         {
             _boxTransferScale = new ScaleTransform(1, 1);
             _boxTransferScale.Changed += (_, _) => QueueBackdropAlignment();
-            GroupShell.RenderTransformOrigin = new System.Windows.Point(0.5, 0.5);
             GroupShell.RenderTransform = _boxTransferScale;
         }
-        if (!ReferenceEquals(GroupShell.RenderTransform, _boxTransferScale))
+        if (_boxTransferScale is null) return;
+        var target = ready ? GroupDragMinimumScale : 1;
+        if (_boxTransferTargetReady == ready && Math.Abs(_boxTransferScaleTarget - target) < 0.0001) return;
+        _boxTransferTargetReady = ready;
+        _boxTransferScaleTarget = target;
+        StartBoxTransferScaleAnimation();
+    }
+
+    private void SetBoxTransferAnchor(System.Windows.Point localPoint)
+    {
+        var width = Math.Max(1, GroupShell.ActualWidth);
+        var height = Math.Max(1, GroupShell.ActualHeight);
+        GroupShell.RenderTransformOrigin = new System.Windows.Point(
+            Math.Clamp(localPoint.X / width, 0, 1), Math.Clamp(localPoint.Y / height, 0, 1));
+    }
+
+    private void StartBoxTransferScaleAnimation()
+    {
+        if (_boxTransferScaleRenderingSubscribed) return;
+        _boxTransferScaleRenderingSubscribed = true;
+        _lastBoxTransferScaleFrame = null;
+        CompositionTarget.Rendering += RenderBoxTransferScale;
+    }
+
+    private void RenderBoxTransferScale(object? sender, EventArgs e)
+    {
+        if (_boxTransferScale is null)
         {
-            GroupShell.RenderTransformOrigin = new System.Windows.Point(0.5, 0.5);
-            GroupShell.RenderTransform = _boxTransferScale;
+            StopBoxTransferScaleAnimation();
+            return;
         }
-        if (_boxTransferTargetReady) return;
-        _boxTransferTargetReady = true;
-        AnimateTransformDouble(_boxTransferScale, ScaleTransform.ScaleXProperty,
-            GroupDragMinimumScale, GroupDragTransitionMilliseconds);
-        AnimateTransformDouble(_boxTransferScale, ScaleTransform.ScaleYProperty,
-            GroupDragMinimumScale, GroupDragTransitionMilliseconds);
+        if (e is not RenderingEventArgs frame || _lastBoxTransferScaleFrame == frame.RenderingTime) return;
+        var seconds = _lastBoxTransferScaleFrame is { } previous
+            ? (frame.RenderingTime - previous).TotalSeconds : 1d / 60;
+        _lastBoxTransferScaleFrame = frame.RenderingTime;
+        var current = _boxTransferScale.ScaleX;
+        var amount = 1 - Math.Exp(-Math.Clamp(seconds, 0, 0.1) / 0.075);
+        var next = current + (_boxTransferScaleTarget - current) * amount;
+        if (Math.Abs(next - _boxTransferScaleTarget) < 0.001) next = _boxTransferScaleTarget;
+        _boxTransferScale.ScaleX = next;
+        _boxTransferScale.ScaleY = next;
+        if (next == _boxTransferScaleTarget) StopBoxTransferScaleAnimation();
+    }
+
+    private void StopBoxTransferScaleAnimation()
+    {
+        if (_boxTransferScaleRenderingSubscribed)
+            CompositionTarget.Rendering -= RenderBoxTransferScale;
+        _boxTransferScaleRenderingSubscribed = false;
+        _lastBoxTransferScaleFrame = null;
     }
 
     private void ResetBoxTransferScale()
     {
         if (_boxTransferScale is null) return;
+        StopBoxTransferScaleAnimation();
         _boxTransferTargetReady = false;
-        _boxTransferScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
-        _boxTransferScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
+        _boxTransferScaleTarget = 1;
         _boxTransferScale = null;
         if (!_windowClosed) GroupShell.RenderTransform = Transform.Identity;
         if (!_windowClosed) QueueBackdropAlignment();
@@ -1435,6 +1470,7 @@ public partial class DeskGroupWindow : DesktopBoxWindow
         if (_hostState is null || sender is not FrameworkElement { DataContext: BoxTabItem item } element) return;
         SwitchTab(item.Tab);
         SetActivationEnabled(true, focusSelection: false);
+        SetBoxTransferAnchor(e.GetPosition(GroupShell));
         _mixedDragTab = item.Tab;
         _mixedTabPreviewUnavailable = false;
         _mixedDragMode = TabDragMode.Pending;
