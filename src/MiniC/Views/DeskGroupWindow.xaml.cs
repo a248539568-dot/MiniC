@@ -62,6 +62,7 @@ public partial class DeskGroupWindow : DesktopBoxWindow
     private Action<BoxTabRef, BoxTabRef>? _mergeContent;
     private Action<BoxTabRef, BoxTabRef>? _mergeHost;
     private Func<BoxTabRef, System.Windows.Point, BoxTabRef?>? _findBoxMergeTarget;
+    private Func<BoxTabRef, System.Windows.Point, BoxTabRef?>? _findWholeBoxMergeTarget;
     private Action<BoxTabRef, BoxTabRef?>? _setBoxMergeTarget;
     private Action<BoxTabRef, Rect, double>? _detachContent;
     private Action<BoxTabRef, IReadOnlyList<BoxTabRef>>? _reorderContent;
@@ -205,7 +206,8 @@ public partial class DeskGroupWindow : DesktopBoxWindow
         Action<BoxTabRef, Rect, double> detach,
         Action<BoxTabRef, IReadOnlyList<BoxTabRef>> reorder,
         Func<BoxTabRef, System.Windows.Point, BoxTabRef?> findMergeTarget,
-        Action<BoxTabRef, BoxTabRef?> setMergeTarget)
+        Action<BoxTabRef, BoxTabRef?> setMergeTarget,
+        Func<BoxTabRef, System.Windows.Point, BoxTabRef?>? findWholeBoxMergeTarget = null)
     {
         _hostState = host;
         _widgetStore = store;
@@ -218,6 +220,7 @@ public partial class DeskGroupWindow : DesktopBoxWindow
         _detachContent = detach;
         _reorderContent = reorder;
         _findBoxMergeTarget = findMergeTarget;
+        _findWholeBoxMergeTarget = findWholeBoxMergeTarget;
         _setBoxMergeTarget = setMergeTarget;
         _widgetStates.Clear();
         foreach (var tab in host.Tabs.Where(tab => tab.Kind == BoxContentKind.Widget))
@@ -1091,7 +1094,7 @@ public partial class DeskGroupWindow : DesktopBoxWindow
     private void BeginBoxMergeIntent(BoxTabRef source, System.Windows.Point pointer)
     {
         _boxMergeTimer.Stop();
-        _boxMergeGesture.Reset(_findBoxMergeTarget?.Invoke(source, pointer));
+        _boxMergeGesture.Reset(FindMergeTarget(source, pointer));
         SetBoxDragTarget(source, null);
     }
 
@@ -1103,7 +1106,7 @@ public partial class DeskGroupWindow : DesktopBoxWindow
 
     private BoxTabRef? UpdateBoxMergeIntent(BoxTabRef source, System.Windows.Point pointer)
     {
-        var target = _boxMergeGesture.Update(_findBoxMergeTarget?.Invoke(source, pointer), pointer,
+        var target = _boxMergeGesture.Update(FindMergeTarget(source, pointer), pointer,
             Environment.TickCount64, VisualTreeHelper.GetDpi(this).DpiScaleX);
         SetBoxDragTarget(source, target);
         UpdateBoxTransferScale(target is not null);
@@ -1111,7 +1114,12 @@ public partial class DeskGroupWindow : DesktopBoxWindow
     }
 
     private BoxTabRef? GetReadyBoxMergeTarget(BoxTabRef source, System.Windows.Point pointer) =>
-        _boxDragTarget is { } ready && _findBoxMergeTarget?.Invoke(source, pointer) == ready ? ready : null;
+        _boxDragTarget is { } ready && FindMergeTarget(source, pointer) == ready ? ready : null;
+
+    private BoxTabRef? FindMergeTarget(BoxTabRef source, System.Windows.Point pointer) =>
+        _isMovingWindow
+            ? (_findWholeBoxMergeTarget ?? _findBoxMergeTarget)?.Invoke(source, pointer)
+            : _findBoxMergeTarget?.Invoke(source, pointer);
 
     private void PollBoxMergeIntent()
     {

@@ -7,7 +7,7 @@ namespace MiniC.Services;
 /// <summary>Arm a merge only after a deliberate pause; an initial overlap is not a new drop intent.</summary>
 internal sealed class BoxMergeGesture
 {
-    internal const int DwellMilliseconds = 450;
+    internal const int DwellMilliseconds = 1000;
     private BoxTabRef? _initialTarget;
     private BoxTabRef? _candidate;
     private Point _anchor;

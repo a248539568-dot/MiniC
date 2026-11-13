@@ -435,7 +435,7 @@ public sealed class DesktopCoordinator : IDisposable
         window.ConfigureHost(host, Groups.ToDictionary(group => group.Id, StringComparer.OrdinalIgnoreCase),
             _widgets, _widgetStore, _widgetWeather, AddWidget, DeleteWidget, ScheduleSave,
             MergeBoxContent, MergeBoxHost, DetachBoxContent, ReorderBoxContent, FindBoxMergeTarget,
-            SetBoxMergeTarget);
+            SetBoxMergeTarget, FindWholeBoxMergeTarget);
 
     private void ShowBoxTab(BoxTabRef tab)
     {
@@ -1507,6 +1507,12 @@ public sealed class DesktopCoordinator : IDisposable
             .LastOrDefault(entry => entry.Bounds.Contains(screenPoint)).Group;
 
     private BoxTabRef? FindBoxMergeTarget(BoxTabRef source, System.Windows.Point screenPoint)
+        => FindBoxMergeTarget(source, screenPoint, wholeBox: false);
+
+    private BoxTabRef? FindWholeBoxMergeTarget(BoxTabRef source, System.Windows.Point screenPoint)
+        => FindBoxMergeTarget(source, screenPoint, wholeBox: true);
+
+    private BoxTabRef? FindBoxMergeTarget(BoxTabRef source, System.Windows.Point screenPoint, bool wholeBox)
     {
         var sourceHost = _boxHosts.FirstOrDefault(host => host.Tabs.Contains(source));
         if (sourceHost is null) return null;
@@ -1514,7 +1520,7 @@ public sealed class DesktopCoordinator : IDisposable
             .ToDictionary(window => new WindowInteropHelper(window).Handle,
                 window => new BoxDropTarget(window.HostId, window.ActiveTab!, window.GetMergeDropScreenBounds()));
         return BoxDropGeometry.FindTarget(sourceHost.Id,
-            NativeWindowPlacement.TopToBottom(candidates.Keys).Select(handle => candidates[handle]), screenPoint);
+            NativeWindowPlacement.TopToBottom(candidates.Keys).Select(handle => candidates[handle]), screenPoint, wholeBox);
     }
 
     private void SetBoxMergeTarget(BoxTabRef source, BoxTabRef? target)

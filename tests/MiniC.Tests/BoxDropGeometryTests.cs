@@ -42,6 +42,15 @@ public sealed class BoxDropGeometryTests
     }
 
     [Fact]
+    public void WholeBoxDragAcceptsTheTargetBoundsWhileTabDragKeepsTheCenterZone()
+    {
+        var target = new BoxDropTarget("target", new(BoxContentKind.DesktopGroup, "target"), new Rect(100, 100, 400, 300));
+        var edge = new Point(110, 250);
+        Assert.Null(BoxDropGeometry.FindTarget("source", [target], edge));
+        Assert.Equal(target.Tab, BoxDropGeometry.FindTarget("source", [target], edge, wholeBox: true));
+    }
+
+    [Fact]
     public async Task RenderScaleDoesNotChangeLayoutBoundsUsedForDrop()
     {
         await GroupMotionTests.OnUiThread(() =>

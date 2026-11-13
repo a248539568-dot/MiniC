@@ -16,13 +16,14 @@ internal static class BoxDropGeometry
 
     public static bool Contains(Rect bounds, Point pointer) => Center(bounds).Contains(pointer);
 
-    public static BoxTabRef? FindTarget(string sourceHostId, IEnumerable<BoxDropTarget> topToBottom, Point pointer)
+    public static BoxTabRef? FindTarget(string sourceHostId, IEnumerable<BoxDropTarget> topToBottom,
+        Point pointer, bool wholeBox = false)
     {
         foreach (var target in topToBottom)
         {
             if (target.HostId == sourceHostId || !target.Bounds.Contains(pointer)) continue;
             // A nearer box's edge must not merge into another box hidden beneath it.
-            return Contains(target.Bounds, pointer) ? target.Tab : null;
+            return (wholeBox || Contains(target.Bounds, pointer)) ? target.Tab : null;
         }
         return null;
     }
