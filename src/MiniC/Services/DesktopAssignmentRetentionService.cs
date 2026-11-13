@@ -49,26 +49,4 @@ public sealed class DesktopAssignmentRetentionService
         return removedPaths;
     }
 
-    internal static bool ValidateForSmokeTest()
-    {
-        var service = new DesktopAssignmentRetentionService(TimeSpan.FromSeconds(3));
-        var assignments = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["C:\\Desktop\\Updater.lnk"] = "box-one"
-        };
-        var missing = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var present = new HashSet<string>(["C:\\Desktop\\Updater.lnk"], StringComparer.OrdinalIgnoreCase);
-
-        var firstMissing = service.Reconcile(assignments, missing, 1_000);
-        var restored = service.Reconcile(assignments, present, 2_000);
-        var missingAgain = service.Reconcile(assignments, missing, 3_000);
-        var stillRetained = service.Reconcile(assignments, missing, 5_999);
-        var expired = service.Reconcile(assignments, missing, 6_000);
-        return firstMissing.Count == 0
-               && restored.Count == 0
-               && missingAgain.Count == 0
-               && stillRetained.Count == 0
-               && assignments.Count == 0
-               && expired.SequenceEqual(["C:\\Desktop\\Updater.lnk"], StringComparer.OrdinalIgnoreCase);
-    }
 }

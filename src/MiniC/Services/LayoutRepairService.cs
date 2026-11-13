@@ -5,8 +5,8 @@ namespace MiniC.Services;
 /// <summary>修复旧布局中仍有项目归属、但收纳盒快照缺失的兼容状态。</summary>
 public static class LayoutRepairService
 {
-    private const double DefaultWidth = 380;
-    private const double DefaultHeight = 320;
+    private const double DefaultWidth = BoxSizePolicy.DefaultWidth;
+    private const double DefaultHeight = BoxSizePolicy.DefaultHeight;
     private const double HorizontalGap = 24;
     private const double VerticalGap = 24;
     private const double StartInsetX = 70;

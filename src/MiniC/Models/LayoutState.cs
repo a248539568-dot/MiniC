@@ -4,13 +4,12 @@ namespace MiniC.Models;
 public sealed class LayoutState
 {
     public List<GroupState> Groups { get; set; } = [];
+    public List<BoxHostState>? BoxHosts { get; set; }
     [System.Text.Json.Serialization.JsonPropertyName("assignments")]
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public Dictionary<string, string>? LegacyAssignments { get; set; }
     public bool? StartWithWindows { get; set; }
-    public string? DefaultTheme { get; set; }
-    public string? DefaultMaterial { get; set; }
-    public double? DefaultOpacity { get; set; }
+    public int AppearanceInitializationVersion { get; set; }
     public NativeDesktopState NativeDesktop { get; set; } = new();
 }
 
@@ -20,6 +19,13 @@ public sealed class NativeDesktopState
     public Dictionary<string, string> Assignments { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, DesktopIconPositionState> ManagedPositions { get; set; } =
         new(StringComparer.OrdinalIgnoreCase);
+    public string ViewMode { get; set; } = "Medium";
+    public string SortMode { get; set; } = "Name";
+    public bool SortAscending { get; set; } = true;
+    public string GroupMode { get; set; } = "None";
+    public bool GroupAscending { get; set; } = true;
+    public bool AutoArrange { get; set; }
+    public bool AlignToGrid { get; set; } = true;
 }
 
 /// <summary>桌面显示层中的图标屏幕坐标。</summary>
@@ -36,11 +42,11 @@ public sealed class GroupState
     public string Name { get; set; } = "收纳盒";
     public double X { get; set; }
     public double Y { get; set; }
-    public double Width { get; set; } = 380;
-    public double Height { get; set; } = 320;
+    public double Width { get; set; } = 340;
+    public double Height { get; set; } = 380;
     public bool IsCollapsed { get; set; }
     public string Theme { get; set; } = "White";
-    public string Material { get; set; } = "Clear";
+    public string Material { get; set; } = "Crystal";
     public double Opacity { get; set; } = 0.62;
     public string ViewMode { get; set; } = "Icons";
     public List<string> ItemOrder { get; set; } = [];

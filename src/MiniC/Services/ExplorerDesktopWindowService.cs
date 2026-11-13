@@ -44,15 +44,6 @@ internal static class ExplorerDesktopWindowService
         return className.ToString() is "Progman" or "WorkerW";
     }
 
-    internal static bool ValidateForSmokeTest()
-    {
-        var host = FindContentHost();
-        var shellWindow = GetShellWindow();
-        if (host == 0 || shellWindow == 0 || FindListView() == 0) return false;
-        if (GetWindowThreadProcessId(shellWindow, out var shellProcessId) == 0) return false;
-        return IsContentHostCandidate(host, shellProcessId);
-    }
-
     private delegate bool EnumWindowsCallback(nint windowHandle, nint parameter);
 
     [DllImport("user32.dll")]

@@ -14,10 +14,11 @@ public sealed record DeskGroupWindowCallbacks(
     Action<bool> SetDesktopDropTargetActive,
     Action<DeskGroup> CreateGroup,
     Action<DeskGroup> DissolveGroup,
-    Func<DeskGroup, IReadOnlyList<DeskGroup>> GetMergeTargets,
-    Func<DeskGroup, System.Windows.Point, DeskGroup?> FindMergeTarget,
-    Action<DeskGroup, DeskGroup?> MergeDragTargetChanged,
-    Action<DeskGroup, DeskGroup> MergeGroups,
-    Action<DeskGroup, DeskGroup> MergeTabIntoGroup,
-    Action<DeskGroup, System.Windows.Point> DetachGroup,
-    Action<IReadOnlyList<DeskGroup>> TabOrderChanged);
+    Action RestoreDesktopLayerPlacement)
+{
+    /// <summary>收纳盒空白区域菜单。旧回调调用方未提供时保持无操作。</summary>
+    public Func<DeskGroup, System.Drawing.Point, Task> ShowBackgroundMenuAsync { get; init; } =
+        static (_, _) => Task.CompletedTask;
+
+    public Func<System.Windows.Rect, System.Windows.Rect>? SnapBounds { get; init; }
+}

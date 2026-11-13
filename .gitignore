@@ -31,6 +31,7 @@ MiniC-Explorer-Probe.txt
 *.pem
 *.log
 !development.log
+!dev.log
 layout.json
 layout.json.*
 Logs/

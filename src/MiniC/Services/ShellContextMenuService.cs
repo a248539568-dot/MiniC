@@ -1,6 +1,7 @@
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows.Interop;
+using MiniC.Models;
 
 namespace MiniC.Services;
 
@@ -9,7 +10,6 @@ public sealed class ShellContextMenuService
 {
     private const uint CommandFirst = 1;
     private const uint ShellCommandLast = 0x6FFF;
-    private const uint CreateGroupCommand = 0x7001;
     private const uint RefreshDesktopCommand = 0x7002;
     private const uint ToggleGroupsCommand = 0x7003;
     private const uint TpmRightButton = 0x0002;
@@ -26,6 +26,7 @@ public sealed class ShellContextMenuService
     private const uint MfSeparator = 0x00000800;
     private const uint MfString = 0x00000000;
     private const uint MfGrayed = 0x00000001;
+    private const uint MfChecked = 0x00000008;
     private const uint MiimBitmap = 0x00000080;
     private const uint CfHdrop = 15;
     private const int SwShowNormal = 1;
@@ -33,13 +34,20 @@ public sealed class ShellContextMenuService
     private static readonly Guid ContextMenuId = new("000214E4-0000-0000-C000-000000000046");
     private static readonly Guid ShellViewId = new("000214E3-0000-0000-C000-000000000046");
 
+    private static ShellContextMenuResult Failure(string operation, int? hresult = null)
+    {
+        var suffix = hresult is null ? string.Empty : $" HRESULT=0x{hresult.Value:X8}";
+        MiniCLogger.Warning(nameof(ShellContextMenuService), $"Shell command failed: {operation}.{suffix}");
+        return ShellContextMenuResult.Failed;
+    }
+
     public ShellContextMenuResult Show(IntPtr ownerHandle, string path, System.Drawing.Point screenPoint)
         => Show(ownerHandle, [path], screenPoint);
 
     public static ShellContextMenuResult InvokeVerb(IntPtr ownerHandle, IEnumerable<string> paths, string canonicalVerb, System.Drawing.Point screenPoint)
     {
         var selectedPaths = paths.Where(path => !string.IsNullOrWhiteSpace(path)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-        if (selectedPaths.Length == 0) return ShellContextMenuResult.Failed;
+        if (selectedPaths.Length == 0) return Failure("InvokeVerb received no paths");
         var absolutePidls = new List<IntPtr>(selectedPaths.Length);
         IShellFolder? parentFolder = null;
         IContextMenu? contextMenu = null;
@@ -47,23 +55,30 @@ public sealed class ShellContextMenuService
         {
             foreach (var path in selectedPaths)
             {
-                if (SHParseDisplayName(path, IntPtr.Zero, out var pidl, 0, out _) < 0 || pidl == IntPtr.Zero)
-                    return ShellContextMenuResult.Failed;
+                var parseResult = SHParseDisplayName(path, IntPtr.Zero, out var pidl, 0, out _);
+                if (parseResult < 0 || pidl == IntPtr.Zero)
+                    return Failure($"InvokeVerb parse path '{path}'", parseResult);
                 absolutePidls.Add(pidl);
             }
             var folderId = ShellFolderId;
-            if (SHBindToParent(absolutePidls[0], ref folderId, out parentFolder, out _) < 0 || parentFolder is null)
-                return ShellContextMenuResult.Failed;
+            var bindResult = SHBindToParent(absolutePidls[0], ref folderId, out parentFolder, out _);
+            if (bindResult < 0 || parentFolder is null)
+                return Failure("InvokeVerb bind parent", bindResult);
             var childPidls = absolutePidls.Select(ILFindLastID).ToArray();
             var contextMenuId = ContextMenuId;
-            if (parentFolder.GetUIObjectOf(ownerHandle, (uint)childPidls.Length, childPidls,
-                    ref contextMenuId, IntPtr.Zero, out var pointer) < 0 || pointer == IntPtr.Zero)
-                return ShellContextMenuResult.Failed;
+            var uiResult = parentFolder.GetUIObjectOf(ownerHandle, (uint)childPidls.Length, childPidls,
+                ref contextMenuId, IntPtr.Zero, out var pointer);
+            if (uiResult < 0 || pointer == IntPtr.Zero)
+                return Failure("InvokeVerb create context menu", uiResult);
             try { contextMenu = (IContextMenu)Marshal.GetObjectForIUnknown(pointer); }
             finally { Marshal.Release(pointer); }
             return InvokeShellVerb(contextMenu, canonicalVerb, ownerHandle, screenPoint);
         }
-        catch { return ShellContextMenuResult.Failed; }
+        catch (Exception exception)
+        {
+            MiniCLogger.Error(nameof(ShellContextMenuService), exception, "InvokeVerb failed.");
+            return ShellContextMenuResult.Failed;
+        }
         finally
         {
             if (contextMenu is not null && Marshal.IsComObject(contextMenu)) Marshal.FinalReleaseComObject(contextMenu);
@@ -72,14 +87,18 @@ public sealed class ShellContextMenuService
         }
     }
 
-    public static ShellContextMenuResult PasteToDesktop(System.Drawing.Point screenPoint) =>
-        ShellClipboardTransferService.PasteToDesktop(screenPoint)
-            ? ShellContextMenuResult.CommandInvoked
-            : ShellContextMenuResult.Failed;
+    public static ShellContextMenuResult PasteToDesktop(System.Drawing.Point screenPoint)
+    {
+        if (ShellClipboardTransferService.PasteToDesktop(screenPoint))
+            return ShellContextMenuResult.CommandInvoked;
+        return Failure("Paste to desktop");
+    }
     /// <summary>显示 Shell 提供的桌面文件夹背景菜单，不依赖隐藏图标的鼠标命中。</summary>
     public ShellContextMenuResult ShowDesktopBackground(
         IntPtr ownerHandle,
-        System.Drawing.Point screenPoint)
+        System.Drawing.Point screenPoint,
+        NativeDesktopState? desktopState,
+        bool includeMiniCDesktopCommands = true)
     {
         IShellFolder? desktopFolder = null;
         IContextMenu? contextMenu = null;
@@ -87,60 +106,20 @@ public sealed class ShellContextMenuService
         try
         {
             contextMenu = CreateDesktopBackgroundContextMenu(
-                ownerHandle, out desktopFolder, out menuOwner, out var hasViewCommands);
-            if (contextMenu is null) return ShellContextMenuResult.Failed;
+                ownerHandle, out desktopFolder, out menuOwner, out _);
+            if (contextMenu is null) return Failure("Create desktop background context menu");
             return ShowMenu(ownerHandle, contextMenu, screenPoint,
-                interceptRename: false, includeMiniCDesktopCommands: true,
-                insertRefreshCommand: !hasViewCommands);
+                interceptRename: false, includeMiniCDesktopCommands,
+                desktopState,
+                insertRefreshCommand: true);
         }
-        catch
+        catch (Exception exception)
         {
+            MiniCLogger.Error(nameof(ShellContextMenuService), exception, "Desktop background menu failed.");
             return ShellContextMenuResult.Failed;
         }
         finally
         {
-            if (contextMenu is not null && Marshal.IsComObject(contextMenu)) Marshal.FinalReleaseComObject(contextMenu);
-            if (menuOwner is not null && Marshal.IsComObject(menuOwner)) Marshal.FinalReleaseComObject(menuOwner);
-            if (desktopFolder is not null && Marshal.IsComObject(desktopFolder))
-                Marshal.FinalReleaseComObject(desktopFolder);
-        }
-    }
-
-    internal static bool ValidateDesktopBackgroundMenuForSmokeTest()
-    {
-        IShellFolder? desktopFolder = null;
-        IContextMenu? contextMenu = null;
-        object? menuOwner = null;
-        var menuHandle = IntPtr.Zero;
-        var miniCBitmap = IntPtr.Zero;
-        try
-        {
-            contextMenu = CreateDesktopBackgroundContextMenu(
-                IntPtr.Zero, out desktopFolder, out menuOwner, out var hasViewCommands);
-            if (contextMenu is null || !hasViewCommands) return false;
-            menuHandle = CreatePopupMenu();
-            if (menuHandle == IntPtr.Zero
-                || contextMenu.QueryContextMenu(
-                    menuHandle, 0, CommandFirst, ShellCommandLast, CmfNormal) < 0
-                || !TryInsertMiniCDesktopCommands(
-                    menuHandle, insertRefreshCommand: !hasViewCommands, out miniCBitmap)
-                || GetMenuItemCount(menuHandle) <= 3)
-                return false;
-
-            var miniCMenu = FindSubMenuByCommand(menuHandle, CreateGroupCommand);
-            return miniCMenu != IntPtr.Zero
-                   && GetMenuItemId(miniCMenu, 0) == CreateGroupCommand
-                   && GetMenuItemId(miniCMenu, 2) == ToggleGroupsCommand
-                   && FindSubMenuEntryPosition(menuHandle, CreateGroupCommand) > 1;
-        }
-        catch
-        {
-            return false;
-        }
-        finally
-        {
-            if (menuHandle != IntPtr.Zero) DestroyMenu(menuHandle);
-            if (miniCBitmap != IntPtr.Zero) DeleteObject(miniCBitmap);
             if (contextMenu is not null && Marshal.IsComObject(contextMenu)) Marshal.FinalReleaseComObject(contextMenu);
             if (menuOwner is not null && Marshal.IsComObject(menuOwner)) Marshal.FinalReleaseComObject(menuOwner);
             if (desktopFolder is not null && Marshal.IsComObject(desktopFolder))
@@ -157,7 +136,13 @@ public sealed class ShellContextMenuService
         desktopFolder = null;
         menuOwner = null;
         hasViewCommands = false;
-        if (SHGetDesktopFolder(out var folder) < 0 || folder is null) return null;
+        var desktopResult = SHGetDesktopFolder(out var folder);
+        if (desktopResult < 0 || folder is null)
+        {
+            MiniCLogger.Warning(nameof(ShellContextMenuService),
+                $"Shell desktop folder unavailable. HRESULT=0x{desktopResult:X8}.");
+            return null;
+        }
         desktopFolder = folder;
 
         var shellViewId = ShellViewId;
@@ -216,14 +201,14 @@ public sealed class ShellContextMenuService
             .Where(path => !string.IsNullOrWhiteSpace(path))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
-        if (selectedPaths.Length == 0) return ShellContextMenuResult.Failed;
+        if (selectedPaths.Length == 0) return Failure("Show received no paths");
 
         if (selectedPaths.Length > 1)
         {
             var parentDirectory = Path.GetDirectoryName(selectedPaths[0]);
             if (parentDirectory is null || selectedPaths.Skip(1).Any(path =>
                     !parentDirectory.Equals(Path.GetDirectoryName(path), StringComparison.OrdinalIgnoreCase)))
-                return ShellContextMenuResult.Failed;
+                return Failure("Show received paths from different directories");
         }
 
         var absolutePidls = new List<IntPtr>(selectedPaths.Length);
@@ -235,7 +220,8 @@ public sealed class ShellContextMenuService
             foreach (var path in selectedPaths)
             {
                 var parseResult = SHParseDisplayName(path, IntPtr.Zero, out var absolutePidl, 0, out _);
-                if (parseResult < 0 || absolutePidl == IntPtr.Zero) return ShellContextMenuResult.Failed;
+                if (parseResult < 0 || absolutePidl == IntPtr.Zero)
+                    return Failure($"Show parse path '{path}'", parseResult);
                 absolutePidls.Add(absolutePidl);
             }
 
@@ -243,7 +229,7 @@ public sealed class ShellContextMenuService
             var result = SHBindToParent(absolutePidls[0], ref folderId, out parentFolder, out _);
             var childPidls = absolutePidls.Select(ILFindLastID).ToArray();
             if (result < 0 || parentFolder is null || childPidls.Any(pidl => pidl == IntPtr.Zero))
-                return ShellContextMenuResult.Failed;
+                return Failure("Show bind parent or child PIDL", result);
 
             var contextMenuId = ContextMenuId;
             result = parentFolder.GetUIObjectOf(
@@ -253,7 +239,8 @@ public sealed class ShellContextMenuService
                 ref contextMenuId,
                 IntPtr.Zero,
                 out var contextMenuPointer);
-            if (result < 0 || contextMenuPointer == IntPtr.Zero) return ShellContextMenuResult.Failed;
+            if (result < 0 || contextMenuPointer == IntPtr.Zero)
+                return Failure("Show create context menu", result);
 
             try
             {
@@ -265,10 +252,12 @@ public sealed class ShellContextMenuService
             }
 
             return ShowMenu(ownerHandle, contextMenu, screenPoint,
-                interceptRename: true, includeMiniCDesktopCommands: false);
+                interceptRename: true, includeMiniCDesktopCommands: false,
+                insertRefreshCommand: false);
         }
-        catch
+        catch (Exception exception)
         {
+            MiniCLogger.Error(nameof(ShellContextMenuService), exception, "Item context menu failed.");
             return ShellContextMenuResult.Failed;
         }
         finally
@@ -285,24 +274,32 @@ public sealed class ShellContextMenuService
         System.Drawing.Point screenPoint,
         bool interceptRename,
         bool includeMiniCDesktopCommands,
-        bool insertRefreshCommand = true)
+        NativeDesktopState? desktopState = null,
+        bool insertRefreshCommand = false)
     {
         var menuHandle = CreatePopupMenu();
-        if (menuHandle == IntPtr.Zero) return ShellContextMenuResult.Failed;
+        if (menuHandle == IntPtr.Zero) return Failure("CreatePopupMenu");
         var miniCBitmap = IntPtr.Zero;
         try
         {
             var queryFlags = CmfNormal | (interceptRename ? CmfCanRename : 0);
             if ((System.Windows.Forms.Control.ModifierKeys & System.Windows.Forms.Keys.Shift) != 0)
                 queryFlags |= CmfExtendedVerbs;
-            if (contextMenu.QueryContextMenu(menuHandle, 0, CommandFirst, ShellCommandLast, queryFlags) < 0)
-                return ShellContextMenuResult.Failed;
-            if (includeMiniCDesktopCommands && IsShellPasteAvailable())
+            var queryResult = contextMenu.QueryContextMenu(menuHandle, 0, CommandFirst, ShellCommandLast, queryFlags);
+            if (queryResult < 0)
+                return Failure("QueryContextMenu", queryResult);
+            if (desktopState is not null)
+                ReplaceDesktopLayoutMenus(menuHandle, desktopState);
+            else if (insertRefreshCommand)
+                RemoveDesktopLayoutMenus(menuHandle);
+            if (insertRefreshCommand && !InsertDesktopRefreshCommand(contextMenu, menuHandle))
+                return Failure("Insert MiniC refresh command");
+            if ((desktopState is not null || insertRefreshCommand) && IsShellPasteAvailable())
                 EnableShellPasteItem(contextMenu, menuHandle);
             if (includeMiniCDesktopCommands
                 && !TryInsertMiniCDesktopCommands(
-                    menuHandle, insertRefreshCommand, out miniCBitmap))
-                return ShellContextMenuResult.Failed;
+                    menuHandle, insertRefreshCommand: false, out miniCBitmap))
+                return Failure("Insert MiniC desktop commands");
 
             var menu2 = contextMenu as IContextMenu2;
             var menu3 = contextMenu as IContextMenu3;
@@ -324,14 +321,20 @@ public sealed class ShellContextMenuService
             }
             if (selectedCommand == 0) return ShellContextMenuResult.Dismissed;
 
-            if (selectedCommand == CreateGroupCommand) return ShellContextMenuResult.CreateGroupRequested;
+            if (desktopState is not null && TryMapDesktopLayoutCommand(selectedCommand, out var desktopResult))
+                return desktopResult;
+
+            if (includeMiniCDesktopCommands && BoxCreationCatalog.Find(selectedCommand) is { } creation)
+                return creation.Result;
             if (selectedCommand == RefreshDesktopCommand) return ShellContextMenuResult.RefreshRequested;
             if (selectedCommand == ToggleGroupsCommand) return ShellContextMenuResult.ToggleGroupsRequested;
             var isNewMenuCommand = IsCommandInNewSubmenu(contextMenu, menuHandle, selectedCommand);
             var commandOffset = selectedCommand - CommandFirst;
             var canonicalVerb = GetCanonicalVerb(contextMenu, commandOffset);
             if (canonicalVerb.Equals("paste", StringComparison.OrdinalIgnoreCase))
-                return PasteToDesktop(screenPoint);
+                return PasteToDesktop(screenPoint) == ShellContextMenuResult.CommandInvoked
+                    ? ShellContextMenuResult.PasteInvoked
+                    : ShellContextMenuResult.Failed;
             if (interceptRename
                 && canonicalVerb.Equals("rename", StringComparison.OrdinalIgnoreCase))
             {
@@ -371,9 +374,136 @@ public sealed class ShellContextMenuService
             Show = SwShowNormal,
             InvokePoint = new NativePoint(screenPoint.X, screenPoint.Y)
         };
-        return contextMenu.InvokeCommand(ref invoke) >= 0
-            ? ShellContextMenuResult.CommandInvoked
-            : ShellContextMenuResult.Failed;
+        var result = contextMenu.InvokeCommand(ref invoke);
+        if (result < 0)
+            return Failure("InvokeCommand", result);
+        return ShellContextMenuResult.CommandInvoked;
+    }
+
+    private const uint DesktopViewSmallCommand = 0x7101;
+    private const uint DesktopViewMediumCommand = 0x7102;
+    private const uint DesktopViewLargeCommand = 0x7103;
+    private const uint DesktopSortNameCommand = 0x7110;
+    private const uint DesktopSortSizeCommand = 0x7111;
+    private const uint DesktopSortTypeCommand = 0x7112;
+    private const uint DesktopSortDateCommand = 0x7113;
+    private const uint DesktopSortAscendingCommand = 0x7114;
+    private const uint DesktopSortDescendingCommand = 0x7115;
+    private const uint DesktopGroupNoneCommand = 0x7120;
+    private const uint DesktopGroupNameCommand = 0x7121;
+    private const uint DesktopGroupSizeCommand = 0x7122;
+    private const uint DesktopGroupTypeCommand = 0x7123;
+    private const uint DesktopGroupDateCommand = 0x7124;
+    private const uint DesktopGroupAscendingCommand = 0x7125;
+    private const uint DesktopGroupDescendingCommand = 0x7126;
+    private const uint DesktopAutoArrangeCommand = 0x7130;
+    private const uint DesktopAlignGridCommand = 0x7131;
+
+    private static void ReplaceDesktopLayoutMenus(IntPtr menuHandle, NativeDesktopState state)
+    {
+        ReplaceRootSubmenu(menuHandle, 0, [
+            ("小图标", DesktopViewSmallCommand, state.ViewMode == "Small"),
+            ("中等图标", DesktopViewMediumCommand, state.ViewMode is not "Small" and not "Large"),
+            ("大图标", DesktopViewLargeCommand, state.ViewMode == "Large"),
+            ("", 0u, false),
+            ("自动排列", DesktopAutoArrangeCommand, state.AutoArrange),
+            ("对齐到网格", DesktopAlignGridCommand, state.AlignToGrid)
+        ]);
+        ReplaceRootSubmenu(menuHandle, 1, [
+            ("名称", DesktopSortNameCommand, state.SortMode == "Name"),
+            ("大小", DesktopSortSizeCommand, state.SortMode == "Size"),
+            ("项目类型", DesktopSortTypeCommand, state.SortMode == "Type"),
+            ("修改日期", DesktopSortDateCommand, state.SortMode == "Date"),
+            ("", 0u, false),
+            ("递增", DesktopSortAscendingCommand, state.SortAscending),
+            ("递减", DesktopSortDescendingCommand, !state.SortAscending)
+        ]);
+        ReplaceRootSubmenu(menuHandle, 2, [
+            ("无", DesktopGroupNoneCommand, state.GroupMode == "None"),
+            ("名称", DesktopGroupNameCommand, state.GroupMode == "Name"),
+            ("大小", DesktopGroupSizeCommand, state.GroupMode == "Size"),
+            ("项目类型", DesktopGroupTypeCommand, state.GroupMode == "Type"),
+            ("修改日期", DesktopGroupDateCommand, state.GroupMode == "Date"),
+            ("", 0u, false),
+            ("递增", DesktopGroupAscendingCommand, state.GroupAscending),
+            ("递减", DesktopGroupDescendingCommand, !state.GroupAscending)
+        ]);
+    }
+
+    private static void RemoveDesktopLayoutMenus(IntPtr menuHandle)
+    {
+        // 收纳盒没有 Explorer 的图标视图可供这些命令操作，避免把操作转发给隐藏桌面层。
+        for (var position = 2; position >= 0; position--)
+        {
+            var submenu = GetSubMenu(menuHandle, position);
+            if (submenu == IntPtr.Zero) continue;
+            _ = RemoveMenu(menuHandle, (uint)position, MfByPosition);
+            _ = DestroyMenu(submenu);
+        }
+    }
+
+    private static void ReplaceRootSubmenu(
+        IntPtr root,
+        int position,
+        IReadOnlyList<(string Label, uint Command, bool Checked)> entries)
+    {
+        var existing = GetSubMenu(root, position);
+        if (existing == IntPtr.Zero) return;
+        _ = RemoveMenu(root, (uint)position, MfByPosition);
+        _ = DestroyMenu(existing);
+
+        var submenu = CreatePopupMenu();
+        if (submenu == IntPtr.Zero) return;
+        foreach (var entry in entries)
+        {
+            if (entry.Command == 0)
+            {
+                if (!AppendMenu(submenu, MfSeparator, IntPtr.Zero, string.Empty))
+                {
+                    DestroyMenu(submenu);
+                    return;
+                }
+                continue;
+            }
+            var flags = MfString | (entry.Checked ? MfChecked : 0u);
+            if (!AppendMenu(submenu, flags, new IntPtr(entry.Command), entry.Label))
+            {
+                DestroyMenu(submenu);
+                return;
+            }
+        }
+        if (!InsertMenu(root, (uint)position, MfByPosition | MfPopup, submenu,
+                position switch { 0 => "查看", 1 => "排序方式", _ => "分组依据" }))
+            DestroyMenu(submenu);
+    }
+
+    internal static bool TryMapDesktopLayoutCommand(
+        uint command,
+        out ShellContextMenuResult result)
+    {
+        result = command switch
+        {
+            DesktopViewSmallCommand => ShellContextMenuResult.DesktopViewSmall,
+            DesktopViewMediumCommand => ShellContextMenuResult.DesktopViewMedium,
+            DesktopViewLargeCommand => ShellContextMenuResult.DesktopViewLarge,
+            DesktopSortNameCommand => ShellContextMenuResult.DesktopSortName,
+            DesktopSortSizeCommand => ShellContextMenuResult.DesktopSortSize,
+            DesktopSortTypeCommand => ShellContextMenuResult.DesktopSortType,
+            DesktopSortDateCommand => ShellContextMenuResult.DesktopSortDate,
+            DesktopSortAscendingCommand => ShellContextMenuResult.DesktopSortAscending,
+            DesktopSortDescendingCommand => ShellContextMenuResult.DesktopSortDescending,
+            DesktopGroupNoneCommand => ShellContextMenuResult.DesktopGroupNone,
+            DesktopGroupNameCommand => ShellContextMenuResult.DesktopGroupName,
+            DesktopGroupSizeCommand => ShellContextMenuResult.DesktopGroupSize,
+            DesktopGroupTypeCommand => ShellContextMenuResult.DesktopGroupType,
+            DesktopGroupDateCommand => ShellContextMenuResult.DesktopGroupDate,
+            DesktopGroupAscendingCommand => ShellContextMenuResult.DesktopGroupAscending,
+            DesktopGroupDescendingCommand => ShellContextMenuResult.DesktopGroupDescending,
+            DesktopAutoArrangeCommand => ShellContextMenuResult.DesktopAutoArrange,
+            DesktopAlignGridCommand => ShellContextMenuResult.DesktopAlignGrid,
+            _ => ShellContextMenuResult.Failed
+        };
+        return result != ShellContextMenuResult.Failed;
     }
 
     private static ShellContextMenuResult InvokeShellVerb(
@@ -396,9 +526,10 @@ public sealed class ShellContextMenuService
                 Show = SwShowNormal,
                 InvokePoint = new NativePoint(screenPoint.X, screenPoint.Y)
             };
-            return contextMenu.InvokeCommand(ref invoke) >= 0
-                ? ShellContextMenuResult.CommandInvoked
-                : ShellContextMenuResult.Failed;
+            var result = contextMenu.InvokeCommand(ref invoke);
+            if (result < 0)
+                return Failure($"Invoke verb '{canonicalVerb}'", result);
+            return ShellContextMenuResult.CommandInvoked;
         }
         finally
         {
@@ -446,7 +577,23 @@ public sealed class ShellContextMenuService
         "FileGroupDescriptor"
     ];
 
-    private static bool TryInsertMiniCDesktopCommands(
+    private static bool InsertDesktopRefreshCommand(IContextMenu contextMenu, IntPtr menuHandle)
+    {
+        // Explorer 的 Refresh 只刷新被隐藏的 SysListView32；移除它并把同一位置交给 MiniC。
+        for (var index = GetMenuItemCount(menuHandle) - 1; index >= 0; index--)
+        {
+            var commandId = GetMenuItemId(menuHandle, index);
+            if (commandId is >= CommandFirst and <= ShellCommandLast
+                && GetCanonicalVerb(contextMenu, commandId - CommandFirst)
+                    .Equals("refresh", StringComparison.OrdinalIgnoreCase))
+                _ = RemoveMenu(menuHandle, (uint)index, MfByPosition);
+        }
+
+        return InsertMenu(menuHandle, 0, MfByPosition | MfString,
+            new IntPtr(RefreshDesktopCommand), "刷新桌面");
+    }
+
+    internal static bool TryInsertMiniCDesktopCommands(
         IntPtr menuHandle,
         bool insertRefreshCommand,
         out IntPtr miniCBitmap)
@@ -458,8 +605,10 @@ public sealed class ShellContextMenuService
         var inserted = false;
         try
         {
-            if (!AppendMenu(miniCMenu, MfString, new IntPtr(CreateGroupCommand), "新建收纳盒")
-                || !AppendMenu(miniCMenu, MfSeparator, IntPtr.Zero, string.Empty)
+            foreach (var creation in BoxCreationCatalog.Options)
+                if (!AppendMenu(miniCMenu, MfString, new IntPtr(creation.CommandId), creation.MenuLabel))
+                    return false;
+            if (!AppendMenu(miniCMenu, MfSeparator, IntPtr.Zero, string.Empty)
                 || !AppendMenu(miniCMenu, MfString, new IntPtr(ToggleGroupsCommand), "显示 / 隐藏收纳盒"))
                 return false;
 
@@ -480,7 +629,7 @@ public sealed class ShellContextMenuService
                 Mask = MiimBitmap,
                 BitmapItem = miniCBitmap
             };
-            var miniCPosition = FindSubMenuEntryPosition(menuHandle, CreateGroupCommand);
+            var miniCPosition = FindSubMenuEntryPosition(menuHandle, BoxCreationCatalog.Options[0].CommandId);
             if (miniCPosition >= 0 && SetMenuItemInfo(menuHandle, (uint)miniCPosition, true, ref menuItemInfo)) return true;
 
             DeleteObject(miniCBitmap);
@@ -511,16 +660,6 @@ public sealed class ShellContextMenuService
         for (var index = 0; index < GetMenuItemCount(menuHandle); index++)
             if (GetMenuItemId(menuHandle, index) == command) return index;
         return -1;
-    }
-
-    private static IntPtr FindSubMenuByCommand(IntPtr menuHandle, uint command)
-    {
-        for (var index = 0; index < GetMenuItemCount(menuHandle); index++)
-        {
-            var submenu = GetSubMenu(menuHandle, index);
-            if (submenu != IntPtr.Zero && FindMenuItemByCommand(submenu, command) >= 0) return submenu;
-        }
-        return IntPtr.Zero;
     }
 
     private static int FindSubMenuEntryPosition(IntPtr menuHandle, uint command)
@@ -801,6 +940,9 @@ public sealed class ShellContextMenuService
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern bool InsertMenu(IntPtr menu, uint position, uint flags, IntPtr itemOrSubmenu, string text);
 
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool RemoveMenu(IntPtr menu, uint position, uint flags);
+
     [DllImport("user32.dll")]
     private static extern uint EnableMenuItem(IntPtr menu, uint item, uint flags);
 
@@ -838,8 +980,29 @@ public enum ShellContextMenuResult
     NewItemCreated,
     CopyInvoked,
     CutInvoked,
+    PasteInvoked,
     RenameRequested,
     CreateGroupRequested,
     RefreshRequested,
-    ToggleGroupsRequested
+    ToggleGroupsRequested,
+    CreateWeatherRequested,
+    CreatePlannerRequested,
+    DesktopViewSmall,
+    DesktopViewMedium,
+    DesktopViewLarge,
+    DesktopSortName,
+    DesktopSortSize,
+    DesktopSortType,
+    DesktopSortDate,
+    DesktopSortAscending,
+    DesktopSortDescending,
+    DesktopGroupNone,
+    DesktopGroupName,
+    DesktopGroupSize,
+    DesktopGroupType,
+    DesktopGroupDate,
+    DesktopGroupAscending,
+    DesktopGroupDescending,
+    DesktopAutoArrange,
+    DesktopAlignGrid
 }

@@ -32,7 +32,9 @@
             </ItemsControl.ItemContainerStyle>
             <ItemsControl.ItemTemplate>
                 <DataTemplate DataType="{x:Type viewModels:DesktopItem}">
-                    <Border Tag="DesktopItemTile" Width="82" MinHeight="88" MaxHeight="{Binding AvailableHeight}"
+                    <Border Tag="DesktopItemTile" Width="{Binding TileWidth, RelativeSource={RelativeSource AncestorType=Window}}"
+                            Height="{Binding TileHeight, RelativeSource={RelativeSource AncestorType=Window}}"
+                            MaxHeight="{Binding AvailableHeight}"
                             ClipToBounds="True" Padding="5" AllowDrop="True"
                             CornerRadius="5"
                             PreviewMouseLeftButtonDown="Item_MouseLeftButtonDown"
@@ -64,10 +66,11 @@
                     </Border.Style>
                     <Grid>
                         <Grid.RowDefinitions>
-                            <RowDefinition Height="46" />
+                            <RowDefinition Height="{Binding IconSize, RelativeSource={RelativeSource AncestorType=Window}}" />
                             <RowDefinition Height="Auto" />
                         </Grid.RowDefinitions>
-                        <Image Source="{Binding Icon}" Width="46" Height="46" Stretch="Uniform"
+                        <Image Source="{Binding Icon}" Width="{Binding IconSize, RelativeSource={RelativeSource AncestorType=Window}}"
+                               Height="{Binding IconSize, RelativeSource={RelativeSource AncestorType=Window}}" Stretch="Uniform"
                                HorizontalAlignment="Center" VerticalAlignment="Top">
                             <Image.Style>
                                 <Style TargetType="Image">
@@ -99,7 +102,8 @@
                                       Stroke="#0F6CBD" StrokeThickness="1.5" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" Fill="Transparent" />
                             </Viewbox>
                         </Border>
-                        <Grid Grid.Row="1" Width="72" Margin="0,4,0,0" HorizontalAlignment="Center">
+                        <Grid Grid.Row="1" Width="{Binding LabelWidth, RelativeSource={RelativeSource AncestorType=Window}}"
+                              Margin="0,4,0,0" HorizontalAlignment="Center">
                             <Grid.Style>
                                 <Style TargetType="Grid">
                                     <Style.Triggers>
@@ -135,7 +139,7 @@
                                  Text="{Binding EditName, UpdateSourceTrigger=PropertyChanged}"
                                  Visibility="{Binding IsRenaming, Converter={StaticResource BooleanToVisibility}}"
                                  HorizontalAlignment="Stretch" VerticalAlignment="Top" MaxHeight="42"
-                                 TextAlignment="Center" TextWrapping="Wrap"
+                                 TextAlignment="Center" TextWrapping="NoWrap"
                                  PreviewKeyDown="RenameBox_PreviewKeyDown"
                                  LostKeyboardFocus="RenameBox_LostKeyboardFocus" />
                         </Grid>

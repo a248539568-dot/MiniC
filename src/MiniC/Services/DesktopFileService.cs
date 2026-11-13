@@ -66,45 +66,47 @@ public sealed class DesktopFileService : IDisposable
         return SHQueryRecycleBin(null, ref info) == 0 ? info.ItemCount : -1;
     }
 
-    /// <summary>返回符合 Explorer 扩展名设置的原位重命名文本。</summary>
-    public static string GetRenameEditName(DesktopItem item, bool? extensionsVisible = null)
+    internal static bool HasProtectedRenameExtension(string path)
+    {
+        var extension = Path.GetExtension(path);
+        return extension.Equals(".lnk", StringComparison.OrdinalIgnoreCase)
+               || extension.Equals(".url", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>编辑普通文件的完整名称；快捷方式的类型后缀隐藏并保留。</summary>
+    public static string GetRenameEditName(DesktopItem item)
     {
         if (item.IsDirectory) return item.Name;
-        if (Path.GetExtension(item.Path).Equals(".lnk", StringComparison.OrdinalIgnoreCase))
+        if (HasProtectedRenameExtension(item.Path))
             return Path.GetFileNameWithoutExtension(item.Path);
-        return extensionsVisible ?? AreFileExtensionsVisible()
-            ? Path.GetFileName(item.Path)
-            : Path.GetFileNameWithoutExtension(item.Path);
+        return Path.GetFileName(item.Path);
     }
 
     /// <summary>返回原位重命名时默认选中的文件名主体长度，不包含可见扩展名。</summary>
     public static int GetRenameSelectionLength(DesktopItem item, string editName)
     {
-        if (item.IsDirectory) return editName.Length;
+        if (item.IsDirectory || HasProtectedRenameExtension(item.Path)) return editName.Length;
         var baseNameLength = editName.Length - Path.GetExtension(editName).Length;
         return baseNameLength > 0 ? baseNameLength : editName.Length;
     }
 
-    /// <summary>把编辑文本解析为最终文件名；隐藏扩展名时保留原后缀。</summary>
+    /// <summary>普通文件按输入名称保存；快捷方式保留受保护的原后缀。</summary>
     public static string GetRenameTargetFileName(
         string sourcePath,
         string normalizedName,
-        bool isDirectory,
-        bool extensionsVisible)
+        bool isDirectory)
     {
         var sourceExtension = Path.GetExtension(sourcePath);
-        var shortcut = sourceExtension.Equals(".lnk", StringComparison.OrdinalIgnoreCase);
-        var extension = isDirectory || (!shortcut && extensionsVisible) ? string.Empty : sourceExtension;
+        var extension = !isDirectory && HasProtectedRenameExtension(sourcePath) ? sourceExtension : string.Empty;
         return extension.Length > 0 && !normalizedName.EndsWith(extension, StringComparison.OrdinalIgnoreCase)
             ? normalizedName + extension
             : normalizedName;
     }
 
-    /// <summary>安全重命名真实桌面项目，不覆盖同名文件，并遵循 Explorer 扩展名设置。</summary>
+    /// <summary>安全重命名真实桌面项目，允许修改普通扩展名且不覆盖同名文件。</summary>
     public Task<DesktopRenameResult> RenameItemAsync(
         string sourcePath,
-        string displayName,
-        bool? extensionsVisible = null) => Task.Run(() =>
+        string displayName) => Task.Run(() =>
     {
         try
         {
@@ -122,7 +124,7 @@ public sealed class DesktopFileService : IDisposable
 
             var isDirectory = Directory.Exists(source);
             var fileName = GetRenameTargetFileName(
-                source, normalizedName, isDirectory, extensionsVisible ?? AreFileExtensionsVisible());
+                source, normalizedName, isDirectory);
             var destination = Path.Combine(Path.GetDirectoryName(source)!, fileName);
             if (source.Equals(destination, StringComparison.Ordinal))
                 return new DesktopRenameResult(true, source, null);
@@ -399,6 +401,8 @@ public sealed class DesktopFileService : IDisposable
 
     private static bool IsPathInsideDirectory(string candidate, string directory)
     {
+        if (!string.Equals(Path.GetPathRoot(candidate), Path.GetPathRoot(directory), StringComparison.OrdinalIgnoreCase))
+            return false;
         var relative = Path.GetRelativePath(directory, candidate);
         return relative != ".."
                && !relative.StartsWith($"..{Path.DirectorySeparatorChar}", StringComparison.Ordinal);

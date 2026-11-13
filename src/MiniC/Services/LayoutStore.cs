@@ -43,45 +43,22 @@ public sealed class LayoutStore
 
             LayoutState state;
             await using (var stream = File.OpenRead(sourcePath))
-                state = await JsonSerializer.DeserializeAsync<LayoutState>(stream, JsonOptions) ?? CreateDefault();
+                state = await JsonSerializer.DeserializeAsync<LayoutState>(stream, JsonOptions)
+                    ?? throw new InvalidDataException($"布局文件没有有效内容：{sourcePath}");
             if (sourcePath.Equals(_legacyFilePath, StringComparison.OrdinalIgnoreCase))
             {
                 try { await SaveAsync(state); }
-                catch
+                catch (Exception exception)
                 {
-                    // 旧布局仍可正常使用；写入新品牌目录失败时下次启动继续迁移。
+                    MiniCLogger.Error(nameof(LayoutStore), exception, "Legacy layout migration will retry next time.");
                 }
             }
             return state;
         }
-        catch
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or NotSupportedException)
         {
-            return CreateDefault();
-        }
-    }
-
-    internal static async Task ValidateLegacyPathMigrationAsync()
-    {
-        var root = Path.Combine(Path.GetTempPath(), $"MiniC-LayoutMigration-{Guid.NewGuid():N}");
-        try
-        {
-            var legacyDirectory = Path.Combine(root, "DeskNest");
-            Directory.CreateDirectory(legacyDirectory);
-            await File.WriteAllTextAsync(Path.Combine(legacyDirectory, "layout.json"),
-                "{\"groups\":[{\"id\":\"legacy\",\"name\":\"Legacy\"}]}");
-            var store = new LayoutStore(root);
-            var state = await store.LoadAsync();
-            if (state.Groups.SingleOrDefault()?.Id != "legacy"
-                || !File.Exists(Path.Combine(root, "MiniC", "layout.json")))
-                throw new InvalidOperationException("旧品牌布局目录迁移自检失败。");
-        }
-        finally
-        {
-            try { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); }
-            catch
-            {
-                // 临时自检目录清理失败不影响用户布局。
-            }
+            MiniCLogger.Error(nameof(LayoutStore), exception, "Layout load failed; original file was not modified.");
+            throw new InvalidDataException($"布局文件无法读取，已停止启动以防止覆盖原有数据：{_filePath}", exception);
         }
     }
 
@@ -106,8 +83,8 @@ public sealed class LayoutStore
             Name = "桌面项目",
             X = 36,
             Y = 104,
-            Width = 430,
-            Height = 390
+            Width = BoxSizePolicy.DefaultWidth,
+            Height = BoxSizePolicy.DefaultHeight
         };
         var work = new GroupState
         {
@@ -115,8 +92,8 @@ public sealed class LayoutStore
             Name = "工作与文档",
             X = 490,
             Y = 104,
-            Width = 390,
-            Height = 320
+            Width = BoxSizePolicy.DefaultWidth,
+            Height = BoxSizePolicy.DefaultHeight
         };
         return new LayoutState { Groups = [all, work] };
     }

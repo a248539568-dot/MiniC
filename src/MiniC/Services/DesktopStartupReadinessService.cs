@@ -19,10 +19,6 @@ public static class DesktopStartupReadinessService
         if (nativeDesktopService.GetDesktopHostIdentity() != 0) _ = DwmFlush();
     }
 
-    internal static bool ValidateWaitPolicyForSmokeTest() =>
-        ShouldContinueWaiting(TimeSpan.FromMilliseconds(200), MaximumWait)
-        && !ShouldContinueWaiting(MaximumWait, MaximumWait);
-
     private static bool ShouldContinueWaiting(TimeSpan elapsed, TimeSpan maximumWait) => elapsed < maximumWait;
 
     [DllImport("dwmapi.dll")]

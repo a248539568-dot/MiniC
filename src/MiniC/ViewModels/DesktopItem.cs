@@ -10,6 +10,7 @@ public sealed class DesktopItem : ObservableObject
     private ImageSource? _icon;
     private bool _isSelected;
     private bool _isDropTarget;
+    private bool _isDragPreviewSource;
     private bool _isRenaming;
     private bool _showFullName;
     private ClipboardTransferState _clipboardTransferState;
@@ -25,6 +26,7 @@ public sealed class DesktopItem : ObservableObject
     public long LastWriteTicks { get; set; }
     internal bool NeedsIconRefresh { get; set; }
     public bool IsVirtual { get; init; }
+    public bool IsDragPreviewSource { get => _isDragPreviewSource; set => SetField(ref _isDragPreviewSource, value); }
 
     public string EditName { get => _editName; set => SetField(ref _editName, value); }
     public bool IsRenaming { get => _isRenaming; set => SetField(ref _isRenaming, value); }

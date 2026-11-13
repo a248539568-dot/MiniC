@@ -81,16 +81,6 @@ public static class DesktopFallbackWatchdog
         return false;
     }
 
-    internal static bool ValidateArgumentsForSmokeTest()
-    {
-        const int expectedProcessId = 4321;
-        const long expectedTicks = 638000000000000000;
-        return TryParse([Argument, "4321", "638000000000000000"], out var processId, out var ticks)
-               && processId == expectedProcessId
-               && ticks == expectedTicks
-               && !TryParse([Argument, "invalid", "0"], out _, out _);
-    }
-
     private static bool ReplacementInstanceIsRunning()
     {
         try

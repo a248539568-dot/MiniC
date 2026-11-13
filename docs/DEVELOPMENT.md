@@ -4,12 +4,12 @@
 
 ## 环境要求
 
-- Windows 10 1809 或更高版本，推荐 Windows 11
+- Windows 11 Build 22000 或更高版本
 - .NET 10 SDK
 - 支持当前 .NET 10 SDK 的代码编辑器；本项目已验证本地 SDK 命令行构建
 - 构建安装包时额外需要 Inno Setup 6
 
-项目目标为 `net10.0-windows`，并同时启用 WPF 和 Windows Forms。由于依赖 Windows Shell 和 Win32 API，不能在非 Windows 环境完成有效运行验证。
+项目目标为 `net10.0-windows10.0.26100.0`，最低 Windows 11 Build 22000，并同时启用 WPF 和 Windows Forms。实时晶透通过 Vortice 的 DXGI/D3D11 GPU 纹理与 Composition 交换链合成，毛玻璃使用系统后景；没有逐帧 CPU/WPF 背景图像回读。由于依赖 Windows Shell 和 Win32 API，不能在非 Windows 环境完成有效运行验证。
 
 ## 获取和构建
 
@@ -29,7 +29,7 @@ dotnet restore .\MiniC.sln --configfile .\NuGet.Publish.Config
 dotnet build .\MiniC.sln -c Release --no-restore
 ```
 
-`NuGet.Config` 已清空外部包源。主应用没有第三方 NuGet 包依赖，但测试项目使用 `Microsoft.NET.Test.Sdk 17.14.1`、`xunit 2.9.3` 和 `xunit.runner.visualstudio 3.1.4`。首次构建使用已有的 `NuGet.Publish.Config` 从 nuget.org 恢复依赖；恢复成功后才使用 `--no-restore`。SDK 仍需包含对应 Windows 桌面目标包。
+`NuGet.Config` 已清空外部包源。主应用使用 `Microsoft.Data.Sqlite 10.0.12`、`lunar-csharp 1.6.8` 和 `Vortice.Direct3D11 3.8.3`（含 DXGI、DirectX、Mathematics 和 SharpGen 运行时依赖）；测试项目使用 `Microsoft.NET.Test.Sdk 17.14.1`、`xunit 2.9.3` 和 `xunit.runner.visualstudio 3.1.4`。首次构建使用已有的 `NuGet.Publish.Config` 从 nuget.org 恢复依赖；恢复成功后才使用 `--no-restore`。SDK 仍需包含对应 Windows 桌面目标包。
 
 2026-09-10 已在独立源码副本和空包缓存中验证恢复、Release 构建与测试，详细结果见 [项目接手记录](HANDOVER.md)。
 
@@ -38,7 +38,7 @@ dotnet build .\MiniC.sln -c Release --no-restore
 构建完成后直接运行：
 
 ```powershell
-& .\src\MiniC\bin\Release\net10.0-windows\MiniC.exe
+& .\src\MiniC\bin\Release\net10.0-windows10.0.26100.0\MiniC.exe
 ```
 
 MiniC 会接管 Explorer 桌面图标显示。调试前关闭其他 MiniC 实例；结束调试后确认 Explorer 原生图标已经恢复。不要同时运行两个会接管桌面的构建。
@@ -76,6 +76,8 @@ MiniC 会接管 Explorer 桌面图标显示。调试前关闭其他 MiniC 实例
 
 ## 验证
 
+晶透像素着色器源文件为 `src/MiniC/Effects/CrystalGlass.hlsl`，已编译的 `CrystalGlass.ps` 作为资源随源码提交，普通构建不需要额外 SDK。修改着色器后，在装有 Windows SDK 的机器运行 `tools/Compile-CrystalShader.ps1`（可用 `-Compiler` 指定 x64 fxc.exe），重新生成 ps_2_0 字节码并运行 CrystalGlassTests。不要把源码扩展名或字节码文件当作 PowerShell 脚本。
+
 `.github/workflows/build.yml` 在 GitHub 的 Windows 运行器上执行依赖恢复、Release 构建和独立测试。自动流程不运行会接管 Explorer 的正常主程序，也不代替安装和真实桌面交互验收。
 
 修改后先执行 Release 构建和独立单元测试：
@@ -87,31 +89,7 @@ MiniC 会接管 Explorer 桌面图标显示。调试前关闭其他 MiniC 实例
 
 `Directory.Build.props` 启用 .NET 分析器、整数溢出检查和警告即错误。服务保持接口导向时，`CA1822`、`CA1859` 等纯风格或微性能建议不阻断发布；正确性和安全告警必须清零。
 
-需要真实 Explorer、DWM 或窗口层的集成行为继续使用专项自检：
-
-```powershell
-.\.dotnet\dotnet.exe .\src\MiniC\bin\Release\net10.0-windows\MiniC.dll `
-  --rename-policy-smoke-test
-if ($LASTEXITCODE -ne 0) { throw "smoke test failed: $LASTEXITCODE" }
-```
-
-可用参数：
-
-| 参数 | 覆盖范围 |
-| --- | --- |
-| `--multi-drag-layout-smoke-test` | 多选拖动布局与网格避让 |
-| `--rename-policy-smoke-test` | 文件名、扩展名和默认选区 |
-| `--rename-focus-smoke-test` | 桌面/收纳盒真实临时文件的失焦提交、Escape 取消、失败恢复与焦点保留 |
-| `--file-transfer-smoke-test` | 文件移动、复制和投放 |
-| `--group-organization-smoke-test` | 收纳盒排序、标签、外观和拓扑 |
-| `--marquee-selection-smoke-test` | 框选和 `Ctrl` 反选 |
-| `--drag-preview-smoke-test` | 拖动预览位置与窗口样式 |
-| `--desktop-drop-target-smoke-test` | 桌面空白区域投放 |
-| `--desktop-interactive-layer-smoke-test` | 桌面交互区域与 Z 序 |
-| `--desktop-display-layer-smoke-test` | Explorer 图标层隐藏和恢复 |
-| `--startup-smoke-test` | XAML、迁移、布局、守护和启动策略 |
-
-`--desktop-display-layer-smoke-test` 会真实切换 Explorer 图标层，只能在可恢复的 Windows 桌面会话中运行。桌面层、Shell、拖放、真实文件和多显示器改动还需人工验证对应交互；测试文件必须是可恢复副本。
+不再通过启动参数运行会弹窗、模拟鼠标或切换 Explorer 图标层的自检。日常验证仅运行 Release 构建与不显示窗口的单元测试，覆盖拓扑、布局、文件规则、SQLite、天气解析和控件状态。真实桌面交互由维护者在单独的测试会话中人工验收，不应在用户正在使用的桌面上自动运行。
 
 运行时诊断日志保存在 `%LOCALAPPDATA%\MiniC\Logs`。Shell、后台任务或 WPF 调度异常必须写入日志，禁止无上下文吞掉异常。
 
@@ -141,3 +119,19 @@ if ($LASTEXITCODE -ne 0) { throw "smoke test failed: $LASTEXITCODE" }
 ```
 
 发布前确认根目录已有维护者选定的 `LICENSE`，并完成首次安装、旧版本升级、卸载、异常退出回退和布局保留验证。安装包应包含 `THIRD_PARTY_NOTICES.md`，对外发布时提供 SHA-256；正式分发建议完成代码签名。
+
+## 2026-09-20 毛玻璃移动
+
+旧屏幕采样实现已删除。毛玻璃开启透出使用系统后景和高斯效果图，原生失败保持直透；切换、隐藏和关闭释放原生材质层。
+
+## 2026-10-18 控制面板移除与外观初始化
+
+控制面板窗口及其启动、托盘左键和单实例唤醒链路已删除。托盘左键改为激活已有收纳盒，外观设置只保留在当前收纳盒或组件自己的菜单中。首次启动执行一次外观初始化迁移，将旧宿主和组件恢复为统一的 `White + Crystal + 62%` 基础样式及默认光学参数，保留位置、尺寸、名称、标签、文件归属和组件内容；布局通过 `AppearanceInitializationVersion` 防止重复覆盖用户后续修改。
+
+## 2026-09-20 合成背景开发依赖
+
+项目与测试目标为 `net10.0-windows10.0.26100.0`，最低系统为 Windows 11 Build 22000。首次还原及自包含发布使用 `NuGet.Publish.Config` 取得 Windows SDK .NET 投影和 Vortice/SharpGen 依赖。0.60.59 保留 WGC/CPU 回读链路的删除结果，接入 GPU→GPU→Composition 原生晶透；安装脚本不再清理所需的 Vortice/SharpGen DLL。修改 shader 后执行 `tools/Compile-CrystalShader.ps1`，需 Windows SDK 的 fxc。无界面检查使用隐藏句柄、离屏 GPU 和实际 DXGI 会话，不启动应用或操作鼠标。
+
+系统后景画刷与 Transform2D 组合仍不受支持，原生晶透使用独立 GPU 背景纹理。安装后需人工验证正常透出、毛玻璃、点击激活、连续拖动和多屏；特别注意 WDA_EXCLUDEFROMCAPTURE 对截图和重叠晶透盒子的影响。桌面来源是静态壁纸；跨显卡同时跨屏折射未实现，不宣称已测得帧率。细节见 [晶透链路](CRYSTAL-WALLPAPER.md)。
+
+0.60.60 的拖动验证继续使用隐藏 HWND 和实际 DXGI 会话：检查双轴成对移动、不改变显隐/激活、单帧等待交换链的缩放和句柄释放、阻塞 UI 接收期间合并 200 次位置更新、取消/关闭丢弃旧提交，以及输入唤醒高精度捕获期限。195/195 Release 检查通过。shader 与材质配方未修改；实际拖动观感由用户验收，不运行可见窗口或鼠标测试。

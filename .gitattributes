@@ -21,3 +21,6 @@
 *.webp binary
 *.exe binary
 *.dll binary
+*.ps binary
+*.cso binary
+*.hlsl text eol=crlf

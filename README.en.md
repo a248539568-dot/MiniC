@@ -2,15 +2,25 @@
 
 [简体中文](README.md)
 
-MiniC is a Windows 10/11 desktop organizer for desktop icon grouping, shortcut organization, and tabbed desktop boxes. Group files, folders, and shortcuts into independent boxes, merge boxes into tabs, or drag a tab out into its own box. Real files remain in the user's Desktop or Public Desktop directory.
+MiniC is a Windows 11 desktop organizer for desktop icon grouping, shortcut organization, and tabbed desktop boxes. Group files, folders, and shortcuts into independent boxes, merge boxes into tabs, or drag a tab out into its own box. Real files remain in the user's Desktop or Public Desktop directory.
 
-> Current version: `0.59.0`. Supports Windows 10 / Windows 11, x64. See the license status below.
+The Chinese UI also includes a compact Planner widget. One 340x380 host contains Overview, Focus, Calendar and Tasks pages; tasks and scheduled events share one SQLite entry set and the calendar aggregates them without creating extra windows. The weather widget keeps the same small host size and uses compact current, hourly and multi-day sections.
+
+> Current local version: `0.60.78`. Targets Windows 11, x64. See the license status below.
+
+Version 0.60.78 makes box merging directional: any source can merge into the chosen destination regardless of creation or list order. Overlapping targets follow native window order. Pause in the destination's center for about 450 ms and release after the merge instruction appears; an initial overlap must be left and entered again. Passing through a target or losing capture keeps the moved position, while Escape restores the origin. New boxes and widgets prefer nearby free space within the current monitor's work area, minimizing overlap when it is full.
+
+Version 0.60.77 preserves box-title and file-name rename drafts during background host reconciliation. Ordinary desktop and box files always expose the complete filename for editing, including changing or removing the extension; only the stem is selected initially. The `.lnk` and `.url` shortcut extensions stay hidden and preserved. Editors scroll horizontally within the fixed grid, and renamed files have their icons refreshed.
+
+The blank-desktop menu uses the public Windows Shell `IContextMenu` surface for file operations, while MiniC owns View, Sort, Group, Auto arrange, Align to grid, and Refresh for its custom icon layer. A box blank-area menu supports Shell New and Paste and assigns created items to that box after the operation completes. Windows 11's modern Explorer menu is an internal host without a public third-party invocation API.
 
 ## Download
 
 [Windows x64 installer](https://github.com/a248539568-dot/MiniC/releases/download/v0.59.0/MiniC-Setup-v0.59.0.exe) · [Release notes and SHA-256 checksums](https://github.com/a248539568-dot/MiniC/releases/latest)
 
-The installer includes the .NET runtime. Developers can build from source using the instructions below.
+The installer includes the .NET runtime. Current local build: 0.60.78; the public download remains 0.59.0. Local installer: `dist/MiniC-Setup-v0.60.78.exe` (57,867,583 bytes, SHA-256 `FEDDDA7B2DC6A60F8E178AB7929CB8EC6D48596550216BBDD5B7ACDE62327CA1`), with an adjacent SHA-256 file. The self-contained publish contains 488 files and the Release suite passes 331/331 tests, including 36 source/destination/order combinations, merge dwell and initial-overlap protection, hidden native window order, release/capture-loss placement, Escape cancellation, and new-box placement. Merge feedback was inspected offscreen at 340x380, 250x170 at 150% DPI, and 340x42. White text and icons retain their soft dark shadow. New boxes use the first valid host's dimensions, with a 340x380 fallback. Actual desktop dragging and appearance still require manual acceptance; no visible test boxes or mouse automation were used.
+
+**Capture settings:** “Hide from capture” applies to all three materials, both sources and detach previews. The window owns foreground affinity; native hosts manage only their own affinity. Disabling hiding preserves refraction by changing the background input. Window capture requests borderless access once; Windows keeps its capture indicator if access is not granted. Unavailable or incorrectly sized rear-window pixels remain transparent. Weather IP location, geocoding and providers explicitly bypass HTTP proxies; OS-level VPN/TUN routing remains controlled by Windows. Previously cached proxy-exit cities can be reset with the IP relocation menu. Drag frames retain coalesced input, paired window placement and one outstanding frame. No app launch or mouse automation was used; real capture appearance and dragging await manual acceptance.
 
 ## Who It Is For
 
@@ -42,12 +52,12 @@ The installer includes the .NET runtime. Developers can build from source using 
 | Application | C#, .NET 10, WPF |
 | Windows integration | Windows Shell COM, Win32 API |
 | Auxiliary UI | Windows Forms notification area icon |
-| Target | Windows 10 1809+ and Windows 11, x64 |
+| Target | Windows 11 Build 22000+, x64 |
 | Distribution | Self-contained `win-x64`, Inno Setup 6 |
 
 ## Build
 
-Use Windows 10/11 with an installed .NET 10 SDK. After cloning the source:
+Use Windows 11 with an installed .NET 10 SDK. After cloning the source:
 
 ```powershell
 dotnet restore .\MiniC.sln --configfile .\NuGet.Publish.Config

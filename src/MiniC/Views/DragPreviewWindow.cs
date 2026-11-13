@@ -109,55 +109,6 @@ public sealed class DragPreviewWindow : Window
         }
     }
 
-    internal static bool ValidateForSmokeTest(DesktopItem item)
-    {
-        var preview = new DragPreviewWindow([item], null);
-        try
-        {
-            preview.Show();
-            preview.UpdatePosition();
-            var handle = new WindowInteropHelper(preview).Handle;
-            var style = GetWindowLongPtr(handle, GwlExStyle).ToInt64();
-            if (!GetWindowRect(handle, out var bounds)) return false;
-            var cursor = System.Windows.Forms.Cursor.Position;
-            var dpi = VisualTreeHelper.GetDpi(preview);
-            var expectedWidth = (int)Math.Round(preview.Width * dpi.DpiScaleX);
-            var expectedHeight = (int)Math.Round(preview.Height * dpi.DpiScaleY);
-            var anchorX = (int)Math.Round(preview._anchorX * dpi.DpiScaleX);
-            var anchorY = (int)Math.Round(preview._anchorY * dpi.DpiScaleY);
-            return IsWindowVisible(handle)
-                   && (style & WsExTransparent) != 0
-                   && (style & WsExToolWindow) != 0
-                   && (style & WsExNoActivate) != 0
-                   && Math.Abs(bounds.Left - (cursor.X - anchorX)) <= 2
-                   && Math.Abs(bounds.Top - (cursor.Y - anchorY)) <= 2
-                   && bounds.Right - bounds.Left == expectedWidth
-                   && bounds.Bottom - bounds.Top == expectedHeight;
-        }
-        finally
-        {
-            preview.Close();
-        }
-    }
-
-    internal static bool ValidateRelativeLayoutForSmokeTest(
-        IReadOnlyList<DesktopItem> items,
-        IReadOnlyDictionary<DesktopItem, System.Windows.Point> relativePositions)
-    {
-        var preview = new DragPreviewWindow(items, relativePositions);
-        try
-        {
-            return preview.Width > PreviewIconSize
-                   && preview.Height > PreviewIconSize
-                   && Math.Abs(preview._anchorX - PreviewIconSize / 2d) < 0.1
-                   && Math.Abs(preview._anchorY - PreviewIconSize / 2d) < 0.1;
-        }
-        finally
-        {
-            preview.Close();
-        }
-    }
-
     protected override void OnSourceInitialized(EventArgs e)
     {
         base.OnSourceInitialized(e);

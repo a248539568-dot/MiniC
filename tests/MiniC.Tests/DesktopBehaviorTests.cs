@@ -19,9 +19,9 @@ public sealed class DesktopBehaviorTests
             IsDirectory = false
         };
 
-        Assert.Equal("Microsoft Edge", DesktopFileService.GetRenameEditName(item, extensionsVisible: true));
+        Assert.Equal("Microsoft Edge", DesktopFileService.GetRenameEditName(item));
         Assert.Equal("Microsoft Edge New.lnk", DesktopFileService.GetRenameTargetFileName(
-            item.Path, "Microsoft Edge New", isDirectory: false, extensionsVisible: true));
+            item.Path, "Microsoft Edge New", isDirectory: false));
     }
 
     [Fact]
@@ -40,6 +40,15 @@ public sealed class DesktopBehaviorTests
     public void ZOrderFallbackNeverUsesGlobalTop()
     {
         Assert.True(DesktopLayerHostService.ValidateZOrderFallbackForSmokeTest());
+    }
+
+    [Fact]
+    public void DesktopIconLayerMustBeImmediatelyAboveExplorer()
+    {
+        var iconLayer = new nint(0x1234);
+        Assert.True(DesktopLayerHostService.IsClosestToDesktop(iconLayer, iconLayer));
+        Assert.False(DesktopLayerHostService.IsClosestToDesktop(iconLayer, new nint(0x5678)));
+        Assert.False(DesktopLayerHostService.IsClosestToDesktop(0, 0));
     }
 
     [Fact]

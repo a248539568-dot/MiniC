@@ -9,6 +9,7 @@ using MiniC.Models;
 using MiniC.Services;
 using MiniC.ViewModels;
 using MiniC.Views;
+using MiniC.Widgets;
 using Application = System.Windows.Application;
 using MessageBox = System.Windows.MessageBox;
 using WinForms = System.Windows.Forms;
@@ -25,6 +26,10 @@ public sealed class DesktopCoordinator : IDisposable
     private const int HotkeyMessage = 0x0312;
     private const int ClipboardUpdateMessage = 0x031D;
     private const int ShellChangeMessage = 0x8001;
+    private const int SettingsChangedMessage = 0x001A;
+    private const int DisplayChangedMessage = 0x007E;
+    private const int DpiChangedMessage = 0x02E0;
+    private const int ThemeChangedMessage = 0x031E;
 
     private readonly LayoutStore _layoutStore;
     private readonly DesktopFileService _desktopFileService;
@@ -40,6 +45,7 @@ public sealed class DesktopCoordinator : IDisposable
     private readonly Dictionary<string, DeskGroupWindow> _windows = new(StringComparer.OrdinalIgnoreCase);
     private readonly DispatcherTimer _saveTimer;
     private readonly DispatcherTimer _reconcileTimer;
+    private readonly DispatcherTimer _wallpaperRefreshTimer;
     private readonly SemaphoreSlim _saveGate = new(1, 1);
     private readonly SemaphoreSlim _refreshGate = new(1, 1);
     private readonly SemaphoreSlim _renameGate = new(1, 1);
@@ -47,7 +53,12 @@ public sealed class DesktopCoordinator : IDisposable
     private readonly System.Drawing.Icon _applicationIcon;
     private readonly WinForms.ToolStripMenuItem _startupMenuItem;
     private readonly HwndSource _messageWindow;
-    private TrayPanelWindow? _trayPanel;
+    private readonly WidgetStore _widgetStore = new();
+    private readonly WidgetWeatherService _widgetWeather = new();
+    private string? _lastReminderWidgetId;
+    private readonly Dictionary<string, WidgetState> _widgets = new(StringComparer.OrdinalIgnoreCase);
+    private readonly List<BoxHostState> _boxHosts = [];
+    private readonly DispatcherTimer _widgetReminderTimer = new() { Interval = TimeSpan.FromSeconds(30) };
     private DesktopSurfaceWindow? _desktopSurface;
     private LayoutState _layout = new();
     private bool _boxesVisible = true;
@@ -94,21 +105,57 @@ public sealed class DesktopCoordinator : IDisposable
         };
         _reconcileTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         _reconcileTimer.Tick += async (_, _) => await ReconcileAsync();
+        _wallpaperRefreshTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(300) };
+        _wallpaperRefreshTimer.Tick += async (_, _) =>
+        {
+            _wallpaperRefreshTimer.Stop();
+            if (_isExiting || _isDisposed) return;
+            try
+            {
+                WallpaperTextureService.Invalidate();
+                await Task.WhenAll(_windows.Values.ToArray().Select(window => window.RefreshWallpaperAsync()));
+            }
+            catch (Exception error)
+            {
+                MiniCLogger.Error(nameof(DesktopCoordinator), error, "Wallpaper refresh failed.");
+            }
+        };
+        _widgetReminderTimer.Tick += (_, _) => CheckWidgetReminders();
 
         _applicationIcon = Environment.ProcessPath is { } processPath
             ? System.Drawing.Icon.ExtractAssociatedIcon(processPath)
               ?? (System.Drawing.Icon)System.Drawing.SystemIcons.Application.Clone()
             : (System.Drawing.Icon)System.Drawing.SystemIcons.Application.Clone();
         _trayIcon = new WinForms.NotifyIcon { Icon = _applicationIcon, Text = "MiniC", Visible = false };
+        _trayIcon.BalloonTipClicked += (_, _) => Application.Current.Dispatcher.InvokeAsync(() =>
+        {
+            if (_lastReminderWidgetId is { } id)
+                ShowBoxTab(new BoxTabRef(BoxContentKind.Widget, id));
+        });
         _trayIcon.MouseClick += (_, args) =>
         {
             if (args.Button == WinForms.MouseButtons.Left)
-                Application.Current.Dispatcher.InvokeAsync(ShowTrayPanel);
+                Application.Current.Dispatcher.InvokeAsync(ActivateBoxes);
         };
-        var trayMenu = new MiniC.Controls.CreamTrayMenu();
-        trayMenu.Items.Add("新建收纳盒", null, (_, _) => Application.Current.Dispatcher.InvokeAsync(AddGroup));
+        var trayMenu = new WinForms.ContextMenuStrip();
+        var widgetsMenu = new WinForms.ToolStripMenuItem("新建组件");
+        foreach (var option in BoxCreationCatalog.Options)
+        {
+            if (option.WidgetKind is null)
+                trayMenu.Items.Add(option.MenuLabel, null, (_, _) =>
+                    Application.Current.Dispatcher.InvokeAsync(() => CreateBox(option)));
+            else
+                widgetsMenu.DropDownItems.Add(option.Name, null, (_, _) =>
+                    Application.Current.Dispatcher.InvokeAsync(() => CreateBox(option)));
+        }
+        trayMenu.Items.Add(widgetsMenu);
+        trayMenu.Items.Add("显示所有组件", null, (_, _) => Application.Current.Dispatcher.InvokeAsync(ShowAllWidgets));
         trayMenu.Items.Add("显示 / 隐藏收纳盒", null, (_, _) => Application.Current.Dispatcher.InvokeAsync(ToggleBoxes));
-        trayMenu.Items.Add("刷新", null, (_, _) => Application.Current.Dispatcher.InvokeAsync(RefreshAsync));
+        trayMenu.Items.Add("刷新", null, (_, _) => Application.Current.Dispatcher.InvokeAsync(async () =>
+        {
+            ScheduleWallpaperRefresh();
+            await RefreshAsync();
+        }));
         _startupMenuItem = new WinForms.ToolStripMenuItem("开机自动启动") { CheckOnClick = false };
         _startupMenuItem.Click += (_, _) => Application.Current.Dispatcher.InvokeAsync(ToggleStartup);
         trayMenu.Items.Add(_startupMenuItem);
@@ -136,9 +183,17 @@ public sealed class DesktopCoordinator : IDisposable
         Application.Current.Dispatcher.InvokeAsync(async () =>
         {
             if (_isExiting) return;
+            ScheduleWallpaperRefresh();
             _desktopSurface?.UpdateDisplayBounds();
             await RefreshAsync();
         });
+    }
+
+    private void ScheduleWallpaperRefresh()
+    {
+        if (_isExiting || _isDisposed) return;
+        _wallpaperRefreshTimer.Stop();
+        _wallpaperRefreshTimer.Start();
     }
 
     public async Task InitializeAsync()
@@ -149,17 +204,32 @@ public sealed class DesktopCoordinator : IDisposable
         _startupMenuItem.Checked = _layout.StartWithWindows.Value;
         LayoutRepairService.EnsureReferencedGroups(_layout,
             SystemParameters.VirtualScreenLeft, SystemParameters.VirtualScreenTop, SystemParameters.VirtualScreenWidth);
-        SeparateOverlappingGroups(_layout.Groups);
+        if (_layout.BoxHosts is null) SeparateOverlappingGroups(_layout.Groups);
 
+        foreach (var widget in _widgetStore.Widgets()) _widgets[widget.Id] = widget;
+        BoxAppearanceDefaults.Initialize(_layout, _widgets.Values, _widgetStore.Save);
         ShowDesktopSurface();
+        _desktopSurface?.SetViewMode(_layout.NativeDesktop.ViewMode);
 
         foreach (var state in _layout.Groups)
         {
             var group = CreateGroupModel(state);
             Groups.Add(group);
         }
-        NormalizeTabGroups();
-        foreach (var group in Groups) ShowGroupWindow(group);
+        _boxHosts.AddRange(BoxTopologyService.Reconcile(_layout.BoxHosts, _layout.Groups,
+            _widgets.Values.Select(widget => (widget.Id, widget.X, widget.Y, widget.Width, widget.Height, widget.Collapsed)).ToArray()));
+        foreach (var host in _boxHosts)
+        {
+            var group = host.Tabs.Where(tab => tab.Kind == BoxContentKind.DesktopGroup)
+                .Select(tab => Groups.FirstOrDefault(candidate => candidate.Id == tab.Id)).FirstOrDefault(candidate => candidate is not null);
+            var widget = host.Tabs.Where(tab => tab.Kind == BoxContentKind.Widget)
+                .Select(tab => _widgets.GetValueOrDefault(tab.Id)).FirstOrDefault(candidate => candidate is not null);
+            host.Appearance ??= group?.Appearance ?? widget?.Appearance ?? BoxAppearanceDefaults.CreateAppearance();
+            host.Theme ??= group?.Theme ?? widget?.Theme ?? BoxAppearanceDefaults.Theme;
+            host.Material ??= group?.Material ?? widget?.Material ?? BoxAppearanceDefaults.Material;
+            host.Opacity ??= group?.Opacity ?? widget?.Opacity ?? BoxAppearanceDefaults.Opacity;
+        }
+        SyncLegacyGroupTopology();
         EnsureGroupWindowCoverage();
 
         _desktopFileService.DesktopChanged += DesktopFileService_DesktopChanged;
@@ -172,6 +242,8 @@ public sealed class DesktopCoordinator : IDisposable
         RefreshClipboardItemState();
         _ = _nativeDesktopService.SetDesktopIconLayerVisible(false);
         _reconcileTimer.Start();
+        _widgetReminderTimer.Start();
+        CheckWidgetReminders();
         await SaveLayoutAsync();
 
         if (migration.Errors.Count > 0)
@@ -189,7 +261,7 @@ public sealed class DesktopCoordinator : IDisposable
             ReleaseDesktopPathsAsync,
             DropExternalPathsOnDesktopAsync,
             DropOnItemAsync,
-            (item, newName) => RenameItemCoreAsync(item, newName),
+            (item, newName) => RenameItemCoreAsync(item, newName, _desktopSurface),
             ShowDesktopItemMenuAsync,
             () => ClearTransientState(_desktopSurface),
             ShowDesktopBackgroundMenuAsync);
@@ -198,18 +270,72 @@ public sealed class DesktopCoordinator : IDisposable
         _desktopSurface.Show();
     }
 
-    public void ShowTrayPanel()
+    public void ActivateBoxes()
     {
-        _trayPanel ??= new TrayPanelWindow(
-            AddGroup,
-            ApplyTheme,
-            ApplyMaterial,
-            ApplyOpacity,
-            GetUnifiedStyle,
-            ToggleBoxes);
-        _trayPanel.ShowNearTray();
+        if (_isExiting || _isDisposed) return;
+        if (!_boxesVisible)
+        {
+            _boxesVisible = true;
+            foreach (var window in _windows.Values) window.Show();
+        }
+
+        foreach (var window in _windows.Values.Where(window => window.IsVisible))
+            window.RefreshDesktopPlacement();
+        _windows.Values.FirstOrDefault(window => window.IsVisible)?.Activate();
     }
 
+    private static string WidgetTitle(WidgetKind kind) => kind switch
+    {
+        WidgetKind.Note => "备忘录", WidgetKind.Tasks => "待办", WidgetKind.Schedule => "日程",
+        WidgetKind.Calendar => "日历", WidgetKind.Planner => "日程中心", _ => "天气"
+    };
+
+    private void CreateBox(BoxCreationOption option)
+    {
+        if (option.WidgetKind is { } kind) AddWidget(kind);
+        else AddGroup();
+    }
+
+    private void AddWidget(WidgetKind kind)
+    {
+        var style = GetDefaultStyle();
+        var size = BoxSizePolicy.GetNewBoxSize(_boxHosts);
+        var location = FindNewBoxLocation(new System.Windows.Point(120, 120), size);
+        var state = new WidgetState { Kind = kind, Title = WidgetTitle(kind),
+            X = location.X, Y = location.Y,
+            Material = style.Material, Theme = style.Theme, Opacity = style.Opacity, Appearance = BoxAppearanceDefaults.CreateAppearance(),
+            Width = size.Width,
+            Height = size.Height,
+            ViewMode = kind == WidgetKind.Weather ? "Small" : "" };
+        _widgetStore.Save(state);
+        _widgets[state.Id] = state;
+        _boxHosts.Add(new BoxHostState { Tabs = [new BoxTabRef(BoxContentKind.Widget, state.Id)],
+            ActiveTab = new BoxTabRef(BoxContentKind.Widget, state.Id),
+            X = state.X, Y = state.Y, Width = state.Width, Height = state.Height,
+            Appearance = state.Appearance, Theme = state.Theme, Material = state.Material, Opacity = state.Opacity });
+        EnsureGroupWindowCoverage();
+        ShowBoxTab(new BoxTabRef(BoxContentKind.Widget, state.Id));
+        ScheduleSave();
+    }
+
+    private void ShowAllWidgets()
+    {
+        foreach (var tab in _widgets.Keys.Select(id => new BoxTabRef(BoxContentKind.Widget, id)))
+            ShowBoxTab(tab);
+    }
+    private void CheckWidgetReminders()
+    {
+        try
+        {
+            var due = _widgetStore.ClaimDue(DateTimeOffset.UtcNow);
+            if (due.Count == 0) return;
+            _lastReminderWidgetId = due[0].WidgetId;
+            var message = string.Join("、", due.Take(3).Select(item => item.Title));
+            if (due.Count > 3) message += $" 等 {due.Count} 条";
+            _trayIcon.ShowBalloonTip(8000, "MiniC 提醒", message, WinForms.ToolTipIcon.Info);
+        }
+        catch (Exception ex) { MiniCLogger.Error(nameof(DesktopCoordinator), ex, "Widget reminder check failed."); }
+    }
     private DeskGroup CreateGroupModel(GroupState state)
     {
         var group = new DeskGroup
@@ -222,7 +348,8 @@ public sealed class DesktopCoordinator : IDisposable
             Height = Math.Max(170, state.Height),
             Theme = state.Theme,
             Material = state.Material,
-            Opacity = state.Opacity is >= 0.22 and <= 0.92 ? state.Opacity : 0.62,
+            Opacity = BackgroundTransparency.NormalizeOpacity(state.Opacity),
+            Appearance = BoxAppearanceDefaults.CreateAppearance(),
             ViewMode = state.ViewMode == "List" ? "List" : "Icons",
             ItemOrder = state.ItemOrder ?? [],
             IsCollapsed = state.IsCollapsed,
@@ -257,35 +384,10 @@ public sealed class DesktopCoordinator : IDisposable
         }
     }
 
-    private void NormalizeTabGroups()
+    private void ShowGroupWindow(DeskGroup group, BoxHostState host, double? arrivalScale = null)
     {
-        foreach (var cluster in Groups.Where(group => group.TabGroupId is not null)
-                     .GroupBy(group => group.TabGroupId!, StringComparer.OrdinalIgnoreCase).ToArray())
-        {
-            var members = cluster.OrderBy(group => group.TabOrder).ToArray();
-            if (members.Length < 2)
-            {
-                members[0].TabGroupId = null;
-                members[0].TabOrder = 0;
-                continue;
-            }
-            for (var index = 0; index < members.Length; index++)
-            {
-                members[index].TabOrder = index;
-                members[index].X = members[0].X;
-                members[index].Y = members[0].Y;
-                members[index].Width = members[0].Width;
-                members[index].Height = members[0].Height;
-                members[index].IsCollapsed = members[0].IsCollapsed;
-            }
-        }
-    }
-
-    private void ShowGroupWindow(DeskGroup group)
-    {
-        var windowKey = GetWindowKey(group);
+        var windowKey = host.Id;
         if (_windows.ContainsKey(windowKey)) return;
-        var members = GetTabMembers(group);
         var callbacks = new DeskGroupWindowCallbacks(
             _ => ScheduleSave(),
             CollectPathsAsync,
@@ -297,105 +399,237 @@ public sealed class DesktopCoordinator : IDisposable
             active => _desktopSurface?.SetDropTargetActive(active),
             source => AddGroupNear(source),
             DissolveGroup,
-            GetMergeTargets,
-            FindMergeTargetAt,
-            SetMergeDragTarget,
-            MergeGroups,
-            MergeTabIntoGroup,
-            DetachGroup,
-            _ => ScheduleSave());
+            () => _desktopSurface?.RefreshDesktopPlacement())
+        {
+            ShowBackgroundMenuAsync = ShowGroupBackgroundMenuAsync,
+            SnapBounds = bounds => SnapBoxBounds(windowKey, bounds)
+        };
         var window = new DeskGroupWindow(
             group, callbacks, _desktopLayerHostService, _desktopDragStateService);
-        window.ConfigureTabs(members, group);
+        ConfigureHostWindow(window, host);
         _windows[windowKey] = window;
+        if (arrivalScale is not null && host.ActiveTab is { } tab) window.SwitchTab(tab);
+        if (arrivalScale is { } scale) window.PrepareBoxTransferArrival(scale);
         window.Show();
+        if (arrivalScale is not null) window.PlayBoxTransferArrival();
         _desktopSurface?.RefreshDesktopPlacement();
     }
-
-    private string GetWindowKey(DeskGroup group) => group.TabGroupId ?? group.Id;
 
     private DeskGroupWindow? FindWindowForGroup(string groupId) =>
         _windows.Values.FirstOrDefault(window => window.ContainsGroup(groupId));
 
-    private DeskGroup[] GetTabMembers(DeskGroup group) => group.TabGroupId is null
-        ? [group]
-        : Groups.Where(candidate => candidate.TabGroupId?.Equals(
-                group.TabGroupId, StringComparison.OrdinalIgnoreCase) == true)
-            .OrderBy(candidate => candidate.TabOrder).ToArray();
-
-    private IReadOnlyList<DeskGroup> GetMergeTargets(DeskGroup source)
+    private Rect SnapBoxBounds(string sourceId, Rect proposed)
     {
-        var sourceKey = GetWindowKey(source);
-        return Groups.Where(group => !GetWindowKey(group).Equals(sourceKey, StringComparison.OrdinalIgnoreCase))
-            .GroupBy(GetWindowKey, StringComparer.OrdinalIgnoreCase)
-            .Select(cluster => cluster.OrderBy(group => group.TabOrder).First())
-            .ToArray();
+        if (!_windows.TryGetValue(sourceId, out var source)) return proposed;
+        var neighbors = new List<Rect>();
+        foreach (var (id, window) in _windows)
+        {
+            if (id == sourceId || !window.IsVisible) continue;
+            if (NativeWindowPlacement.TryGetBounds(new WindowInteropHelper(window).Handle, out var bounds))
+                neighbors.Add(bounds);
+        }
+        return BoxSnapGeometry.Snap(proposed, neighbors, System.Windows.Media.VisualTreeHelper.GetDpi(source).DpiScaleX);
     }
 
-    private void CloseWindowForGroup(DeskGroup group)
+    private void ConfigureHostWindow(DeskGroupWindow window, BoxHostState host) =>
+        window.ConfigureHost(host, Groups.ToDictionary(group => group.Id, StringComparer.OrdinalIgnoreCase),
+            _widgets, _widgetStore, _widgetWeather, AddWidget, DeleteWidget, ScheduleSave,
+            MergeBoxContent, MergeBoxHost, DetachBoxContent, ReorderBoxContent, FindBoxMergeTarget,
+            SetBoxMergeTarget);
+
+    private void ShowBoxTab(BoxTabRef tab)
     {
-        var entry = _windows.FirstOrDefault(pair => pair.Value.ContainsGroup(group.Id));
-        if (entry.Value is null) return;
-        _windows.Remove(entry.Key);
-        entry.Value.ClosePermanently();
+        var host = _boxHosts.FirstOrDefault(candidate => candidate.Tabs.Contains(tab));
+        if (host is null || !_windows.TryGetValue(host.Id, out var window)) return;
+        if (!window.IsVisible) window.Show();
+        window.SwitchTab(tab);
+        window.Activate();
     }
 
-    private void EnsureGroupWindowCoverage()
+    private void DeleteWidget(WidgetState widget)
     {
-        if (!_boxesVisible) return;
-        var representatives = Groups
-            .GroupBy(GetWindowKey, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(cluster => cluster.Key,
-                cluster => cluster.OrderBy(group => group.TabOrder).First(),
-                StringComparer.OrdinalIgnoreCase);
+        _widgetStore.DeleteWidget(widget.Id);
+        _widgets.Remove(widget.Id);
+        BoxTopologyService.Remove(_boxHosts, new BoxTabRef(BoxContentKind.Widget, widget.Id));
+        SyncLegacyGroupTopology();
+        EnsureGroupWindowCoverage();
+        ScheduleSave();
+    }
 
+    private void MergeBoxContent(BoxTabRef source, BoxTabRef target)
+    {
+        if (source == target) return;
+        var origin = _boxHosts.Single(host => host.Tabs.Contains(source));
+        if (ReferenceEquals(origin, _boxHosts.Single(host => host.Tabs.Contains(target)))) return;
+        ChangeBoxTopology(() => BoxTopologyService.Merge(_boxHosts, source, target), source);
+    }
+
+    private void MergeBoxHost(BoxTabRef source, BoxTabRef target)
+    {
+        if (source == target) return;
+        var origin = _boxHosts.Single(host => host.Tabs.Contains(source));
+        if (ReferenceEquals(origin, _boxHosts.Single(host => host.Tabs.Contains(target)))) return;
+        ChangeBoxTopology(() => BoxTopologyService.MergeHost(_boxHosts, source, target), source);
+    }
+
+    private void DetachBoxContent(BoxTabRef tab, Rect bounds, double startScale)
+    {
+        var host = _boxHosts.Single(candidate => candidate.Tabs.Contains(tab));
+        ChangeBoxTopology(() => BoxTopologyService.Detach(_boxHosts, tab, bounds.X, bounds.Y,
+            bounds.Width, bounds.Height, false), tab, startScale);
+    }
+
+    private void ChangeBoxTopology(Action change, BoxTabRef activeTab, double? arrivalScale = null)
+    {
+        var previousHosts = _boxHosts.Select(CloneHost).ToArray();
+        var expected = Groups.Select(group => new BoxTabRef(BoxContentKind.DesktopGroup, group.Id))
+            .Concat(_widgets.Keys.Select(id => new BoxTabRef(BoxContentKind.Widget, id))).ToArray();
+        try
+        {
+            change();
+            BoxTopologyService.Validate(_boxHosts, expected);
+            SyncLegacyGroupTopology();
+            EnsureGroupWindowCoverage(activeTab, arrivalScale);
+            ShowBoxTab(activeTab);
+            ScheduleSave();
+        }
+        catch (Exception error)
+        {
+            _boxHosts.Clear();
+            _boxHosts.AddRange(previousHosts);
+            var recovered = false;
+            try
+            {
+                SyncLegacyGroupTopology();
+                EnsureGroupWindowCoverage();
+                recovered = true;
+            }
+            catch (Exception recoveryError)
+            {
+                MiniCLogger.Warning(nameof(DesktopCoordinator), $"Box recovery failed: {recoveryError}");
+            }
+            MiniCLogger.Warning(nameof(DesktopCoordinator), $"Box topology change failed: {error}");
+            MessageBox.Show($"盒子操作未完成，{(recovered ? "已恢复原布局" : "恢复失败，请重启 MiniC 并检查日志")}。\n\n{error.Message}",
+                "MiniC", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    private void ReorderBoxContent(BoxTabRef tab, IReadOnlyList<BoxTabRef> tabs)
+    {
+        BoxTopologyService.Reorder(_boxHosts.Single(host => host.Tabs.Contains(tab)), tabs);
+        SyncLegacyGroupTopology();
+        ScheduleSave();
+    }
+
+    private void SyncLegacyGroupTopology()
+    {
+        foreach (var host in _boxHosts)
+        {
+            var groups = host.Tabs.Where(tab => tab.Kind == BoxContentKind.DesktopGroup)
+                .Select(tab => Groups.First(group => group.Id == tab.Id)).ToArray();
+            for (var index = 0; index < groups.Length; index++)
+            {
+                groups[index].TabGroupId = groups.Length > 1 ? host.Id : null;
+                groups[index].TabOrder = index;
+                groups[index].X = host.X; groups[index].Y = host.Y;
+                groups[index].Width = host.Width; groups[index].Height = host.Height;
+                groups[index].IsCollapsed = host.IsCollapsed;
+            }
+        }
+    }
+
+
+    private void EnsureGroupWindowCoverage(BoxTabRef? arrivingTab = null, double? arrivalScale = null)
+    {
+        BoxTopologyService.Validate(_boxHosts,
+            Groups.Select(group => new BoxTabRef(BoxContentKind.DesktopGroup, group.Id))
+                .Concat(_widgets.Keys.Select(id => new BoxTabRef(BoxContentKind.Widget, id))).ToArray());
+        var representatives = _boxHosts.ToDictionary(host => host.Id, host => host,
+            StringComparer.OrdinalIgnoreCase);
+
+        foreach (var (windowKey, host) in representatives)
+        {
+            if (!_windows.TryGetValue(windowKey, out var window))
+            {
+                var representative = host.Tabs.Where(tab => tab.Kind == BoxContentKind.DesktopGroup)
+                    .Select(tab => Groups.First(group => group.Id == tab.Id)).FirstOrDefault();
+                var fallback = representative ?? CreateHostAnchor(host);
+                ShowGroupWindow(fallback, host, arrivingTab is { } tab && host.Tabs.Contains(tab)
+                    ? arrivalScale : null);
+                continue;
+            }
+            ConfigureHostWindow(window, host);
+            if (_boxesVisible && !window.IsVisible) window.Show();
+            if (_boxesVisible && !window.IsActive) window.RefreshDesktopPlacement();
+        }
+
+        // Only retire the source window after every destination is configured.
         foreach (var staleKey in _windows.Keys.Where(key => !representatives.ContainsKey(key)).ToArray())
         {
             var staleWindow = _windows[staleKey];
             _windows.Remove(staleKey);
             staleWindow.ClosePermanently();
         }
-
-        foreach (var (windowKey, representative) in representatives)
-        {
-            if (!_windows.TryGetValue(windowKey, out var window))
-            {
-                ShowGroupWindow(representative);
-                continue;
-            }
-            var expectedMembers = GetTabMembers(representative);
-            if (!window.Members.Select(member => member.Id)
-                    .SequenceEqual(expectedMembers.Select(member => member.Id), StringComparer.OrdinalIgnoreCase))
-            {
-                var activeGroup = expectedMembers.Contains(window.Group) ? window.Group : representative;
-                window.ConfigureTabs(expectedMembers, activeGroup);
-            }
-            if (!window.IsVisible) window.Show();
-            window.RefreshDesktopPlacement();
-        }
     }
+
+    private static DeskGroup CreateHostAnchor(BoxHostState host) => new()
+    {
+        Id = "host-anchor-" + host.Id, Name = "组件", X = host.X, Y = host.Y,
+        Width = host.Width, Height = host.Height,
+        Theme = host.Theme ?? "White", Material = host.Material ?? "Crystal",
+        Opacity = host.Opacity ?? BoxAppearanceDefaults.Opacity,
+        Appearance = host.Appearance ?? BoxAppearanceDefaults.CreateAppearance(),
+        IsCollapsed = host.IsCollapsed
+    };
 
     private void AddGroup() => AddGroupNear(Groups.LastOrDefault());
 
     private void AddGroupNear(DeskGroup? source)
     {
-        var style = GetUnifiedStyle();
+        var style = GetDefaultStyle();
+        var size = BoxSizePolicy.GetNewBoxSize(_boxHosts);
         var index = Groups.Count + 1;
+        var location = FindNewBoxLocation(source is null ? new System.Windows.Point(70, 130)
+            : new System.Windows.Point(source.X + source.Width + BoxCreationPlacement.Gap, source.Y), size, source);
         var group = new DeskGroup
         {
             Name = $"收纳盒 {index}",
-            X = source is null ? 70 + index % 8 * 26 : source.X + 28,
-            Y = source is null ? 130 + index % 8 * 26 : source.Y + 28,
-            Width = source?.Width ?? 380,
-            Height = source?.Height ?? 320,
+            X = location.X,
+            Y = location.Y,
+            Width = size.Width,
+            Height = size.Height,
             Theme = style.Theme,
             Material = style.Material,
+            Appearance = BoxAppearanceDefaults.CreateAppearance(),
             Opacity = style.Opacity
         };
         group.PropertyChanged += (_, _) => ScheduleSave();
         Groups.Add(group);
-        ShowGroupWindow(group);
+        _boxHosts.Add(new BoxHostState { Id = group.Id, Tabs = [new BoxTabRef(BoxContentKind.DesktopGroup, group.Id)],
+            ActiveTab = new BoxTabRef(BoxContentKind.DesktopGroup, group.Id),
+            X = group.X, Y = group.Y, Width = group.Width, Height = group.Height,
+            Theme = group.Theme, Material = group.Material, Opacity = group.Opacity, Appearance = group.Appearance });
+        EnsureGroupWindowCoverage();
         ScheduleSave();
+    }
+
+    private System.Windows.Point FindNewBoxLocation(System.Windows.Point preferred, BoxSize size, DeskGroup? source = null)
+    {
+        var anchor = source is null ? _windows.Values.FirstOrDefault(window => window.IsVisible)
+            : FindWindowForGroup(source.Id);
+        var workArea = SystemParameters.WorkArea;
+        if (anchor is { IsVisible: true })
+        {
+            var physical = WinForms.Screen.FromHandle(new WindowInteropHelper(anchor).Handle).WorkingArea;
+            var topLeft = anchor.PointFromScreen(new System.Windows.Point(physical.Left, physical.Top));
+            var bottomRight = anchor.PointFromScreen(new System.Windows.Point(physical.Right, physical.Bottom));
+            workArea = new Rect(new System.Windows.Point(anchor.Left + topLeft.X, anchor.Top + topLeft.Y),
+                new System.Windows.Point(anchor.Left + bottomRight.X, anchor.Top + bottomRight.Y));
+        }
+        var occupied = _boxHosts.Select(host => _windows.TryGetValue(host.Id, out var window)
+            ? new Rect(window.Left, window.Top, window.Width, window.Height)
+            : new Rect(host.X, host.Y, host.Width, host.Height));
+        return BoxCreationPlacement.Find(preferred, new System.Windows.Size(size.Width, size.Height), workArea, occupied);
     }
 
     private async Task CollectPathsAsync(DeskGroup target, IReadOnlyList<string> paths, bool copyExternal)
@@ -447,7 +681,8 @@ public sealed class DesktopCoordinator : IDisposable
             effect == System.Windows.DragDropEffects.Copy);
         var placedPaths = result.DestinationPaths.Where(path => File.Exists(path) || Directory.Exists(path)).ToArray();
         _desktopIconPlacementService.PlaceAt(
-            placedPaths, screenPoint, DesktopItems, _layout.NativeDesktop.ManagedPositions);
+            placedPaths, screenPoint, DesktopItems, _layout.NativeDesktop.ManagedPositions,
+            _layout.NativeDesktop.AlignToGrid);
         await RefreshAsync();
         ScheduleSave();
         ShowFileOperationErrors(result.Errors);
@@ -521,7 +756,8 @@ public sealed class DesktopCoordinator : IDisposable
         var existingPaths = paths.Where(path => path.StartsWith("shell:::", StringComparison.OrdinalIgnoreCase)
                                                 || File.Exists(path) || Directory.Exists(path)).ToArray();
         _desktopIconPlacementService.PlaceAt(
-            existingPaths, screenPoint, DesktopItems, _layout.NativeDesktop.ManagedPositions);
+            existingPaths, screenPoint, DesktopItems, _layout.NativeDesktop.ManagedPositions,
+            _layout.NativeDesktop.AlignToGrid);
         await RefreshAsync();
         ScheduleSave();
     }
@@ -552,15 +788,16 @@ public sealed class DesktopCoordinator : IDisposable
         var existingPaths = paths.Where(path => path.StartsWith("shell:::", StringComparison.OrdinalIgnoreCase)
                                                 || File.Exists(path) || Directory.Exists(path)).ToArray();
         _desktopIconPlacementService.PlaceAt(
-            existingPaths, screenPoint, DesktopItems, _layout.NativeDesktop.ManagedPositions);
+            existingPaths, screenPoint, DesktopItems, _layout.NativeDesktop.ManagedPositions,
+            _layout.NativeDesktop.AlignToGrid);
         await RefreshAsync();
         ScheduleSave();
     }
 
     private async Task<bool> RenameItemAsync(DeskGroup group, DesktopItem item, string newName)
-        => await RenameItemCoreAsync(item, newName);
+        => await RenameItemCoreAsync(item, newName, FindWindowForGroup(group.Id));
 
-    private async Task<bool> RenameItemCoreAsync(DesktopItem item, string newName)
+    private async Task<bool> RenameItemCoreAsync(DesktopItem item, string newName, Window? owner)
     {
         if (_isExiting) return false;
         await _renameGate.WaitAsync();
@@ -573,8 +810,9 @@ public sealed class DesktopCoordinator : IDisposable
             var result = await _desktopFileService.RenameItemAsync(oldPath, newName);
             if (!result.Succeeded || result.NewPath is null)
             {
-                MessageBox.Show(result.Error ?? "无法重命名该项目。", "重命名失败",
-                    MessageBoxButton.OK, MessageBoxImage.Warning);
+                if (owner is { IsVisible: true })
+                    MessageBox.Show(owner, result.Error ?? "无法重命名该项目。", "重命名失败",
+                        MessageBoxButton.OK, MessageBoxImage.Warning);
                 return false;
             }
 
@@ -586,6 +824,7 @@ public sealed class DesktopCoordinator : IDisposable
             _suppressWatcherRefreshUntil = Environment.TickCount64 + 900;
             item.Path = result.NewPath;
             item.Name = NativeDesktopService.GetDisplayName(result.NewPath, item.IsDirectory);
+            item.NeedsIconRefresh = true;
             foreach (var group in Groups)
             {
                 var orderIndex = group.ItemOrder.FindIndex(name => name.Equals(Path.GetFileName(oldPath), StringComparison.OrdinalIgnoreCase));
@@ -798,6 +1037,7 @@ public sealed class DesktopCoordinator : IDisposable
             return DesktopItemRefreshService.Merge(current, item);
         }).ToArray();
         SynchronizeItems(DesktopItems, desiredDesktop);
+        ApplyDesktopOrdering();
         foreach (var item in DesktopItems)
         {
             var position = _layout.NativeDesktop.ManagedPositions[item.Path];
@@ -907,7 +1147,23 @@ public sealed class DesktopCoordinator : IDisposable
 
     private async Task ShowDesktopBackgroundMenuAsync(System.Drawing.Point screenPoint)
     {
-        if (_desktopSurface is null || _desktopBackgroundMenuActive) return;
+        if (_desktopSurface is null) return;
+        await ShowBackgroundMenuCoreAsync(_desktopSurface, null, screenPoint);
+    }
+
+    private async Task ShowGroupBackgroundMenuAsync(DeskGroup group, System.Drawing.Point screenPoint)
+    {
+        var window = FindWindowForGroup(group.Id);
+        if (window is null) return;
+        await ShowBackgroundMenuCoreAsync(window, group, screenPoint);
+    }
+
+    private async Task ShowBackgroundMenuCoreAsync(
+        Window sourceWindow,
+        DeskGroup? targetGroup,
+        System.Drawing.Point screenPoint)
+    {
+        if (_desktopBackgroundMenuActive) return;
         _desktopBackgroundMenuActive = true;
         await _refreshGate.WaitAsync();
         _refreshGate.Release();
@@ -916,28 +1172,59 @@ public sealed class DesktopCoordinator : IDisposable
         var result = ShellContextMenuResult.Failed;
         IReadOnlyList<string> newItemPaths = [];
         var ownerWindow = new ShellMenuOwnerWindow(screenPoint);
-        SetTransientPopupState(_desktopSurface, true);
+        SetTransientPopupState(sourceWindow, true);
         try
         {
             var owner = ownerWindow.ShowAndGetHandle();
-            result = _shellContextMenu.ShowDesktopBackground(owner, screenPoint);
-            if (result == ShellContextMenuResult.NewItemCreated)
+            result = _shellContextMenu.ShowDesktopBackground(
+                owner, screenPoint, targetGroup is null ? _layout.NativeDesktop : null,
+                targetGroup is null);
+            if (result is ShellContextMenuResult.NewItemCreated or ShellContextMenuResult.PasteInvoked)
                 newItemPaths = await WaitForDesktopCommandToSettleAsync(pathsBeforeCommand);
         }
         finally
         {
             ownerWindow.Close();
-            SetTransientPopupState(_desktopSurface, false);
+            SetTransientPopupState(sourceWindow, false);
             _desktopBackgroundMenuActive = false;
         }
 
         var deferredRenames = _deferredDesktopRenames.ToArray();
         _deferredDesktopRenames.Clear();
         ApplyRenames(deferredRenames);
+        if (targetGroup is not null)
+        {
+            if (result is ShellContextMenuResult.NewItemCreated or ShellContextMenuResult.PasteInvoked)
+            {
+                foreach (var path in newItemPaths.Where(path =>
+                             File.Exists(path) || Directory.Exists(path)))
+                {
+                    _layout.NativeDesktop.Assignments[path] = targetGroup.Id;
+                    _layout.NativeDesktop.ManagedPositions.Remove(path);
+                }
+                await RefreshAsync();
+                ScheduleSave();
+                if (result == ShellContextMenuResult.NewItemCreated)
+                    BeginRenameCreatedItemInGroup(targetGroup, newItemPaths);
+            }
+            else if (result is ShellContextMenuResult.CommandInvoked or ShellContextMenuResult.RefreshRequested)
+            {
+                await RefreshAsync();
+                ScheduleSave();
+            }
+            else if (deferredRenames.Length > 0)
+            {
+                await RefreshAsync();
+                ScheduleSave();
+            }
+            ClearTransientState();
+            return;
+        }
+
         switch (result)
         {
-            case ShellContextMenuResult.CreateGroupRequested:
-                AddGroup();
+            case var requested when BoxCreationCatalog.Find(requested) is { } option:
+                CreateBox(option);
                 break;
             case ShellContextMenuResult.RefreshRequested:
                 await RefreshAsync();
@@ -947,6 +1234,7 @@ public sealed class DesktopCoordinator : IDisposable
                 ToggleBoxes();
                 break;
             case ShellContextMenuResult.CommandInvoked:
+            case ShellContextMenuResult.PasteInvoked:
                 await RefreshAsync();
                 ScheduleSave();
                 break;
@@ -954,6 +1242,26 @@ public sealed class DesktopCoordinator : IDisposable
                 await RefreshAsync();
                 PlaceCreatedItemsAtPointer(newItemPaths, screenPoint);
                 ScheduleSave();
+                break;
+            case ShellContextMenuResult.DesktopViewSmall:
+            case ShellContextMenuResult.DesktopViewMedium:
+            case ShellContextMenuResult.DesktopViewLarge:
+            case ShellContextMenuResult.DesktopSortName:
+            case ShellContextMenuResult.DesktopSortSize:
+            case ShellContextMenuResult.DesktopSortType:
+            case ShellContextMenuResult.DesktopSortDate:
+            case ShellContextMenuResult.DesktopSortAscending:
+            case ShellContextMenuResult.DesktopSortDescending:
+            case ShellContextMenuResult.DesktopGroupNone:
+            case ShellContextMenuResult.DesktopGroupName:
+            case ShellContextMenuResult.DesktopGroupSize:
+            case ShellContextMenuResult.DesktopGroupType:
+            case ShellContextMenuResult.DesktopGroupDate:
+            case ShellContextMenuResult.DesktopGroupAscending:
+            case ShellContextMenuResult.DesktopGroupDescending:
+            case ShellContextMenuResult.DesktopAutoArrange:
+            case ShellContextMenuResult.DesktopAlignGrid:
+                ApplyDesktopLayoutCommand(result);
                 break;
             default:
                 if (deferredRenames.Length > 0)
@@ -966,6 +1274,116 @@ public sealed class DesktopCoordinator : IDisposable
         ClearTransientState();
         if (result == ShellContextMenuResult.NewItemCreated)
             BeginRenameCreatedItem(newItemPaths);
+    }
+
+    private void BeginRenameCreatedItemInGroup(DeskGroup group, IReadOnlyList<string> paths)
+    {
+        var path = paths.Count == 1 ? paths[0] : paths.LastOrDefault();
+        if (string.IsNullOrWhiteSpace(path)) return;
+        var item = group.Items.FirstOrDefault(candidate =>
+            candidate.Path.Equals(path, StringComparison.OrdinalIgnoreCase));
+        if (item is not null) FindWindowForGroup(group.Id)?.BeginRename(item);
+    }
+
+    private void ApplyDesktopLayoutCommand(ShellContextMenuResult result)
+    {
+        var state = _layout.NativeDesktop;
+        switch (result)
+        {
+            case ShellContextMenuResult.DesktopViewSmall:
+                state.ViewMode = "Small";
+                _desktopSurface?.SetViewMode(state.ViewMode);
+                break;
+            case ShellContextMenuResult.DesktopViewMedium:
+                state.ViewMode = "Medium";
+                _desktopSurface?.SetViewMode(state.ViewMode);
+                break;
+            case ShellContextMenuResult.DesktopViewLarge:
+                state.ViewMode = "Large";
+                _desktopSurface?.SetViewMode(state.ViewMode);
+                break;
+            case ShellContextMenuResult.DesktopSortName: state.SortMode = "Name"; break;
+            case ShellContextMenuResult.DesktopSortSize: state.SortMode = "Size"; break;
+            case ShellContextMenuResult.DesktopSortType: state.SortMode = "Type"; break;
+            case ShellContextMenuResult.DesktopSortDate: state.SortMode = "Date"; break;
+            case ShellContextMenuResult.DesktopSortAscending: state.SortAscending = true; break;
+            case ShellContextMenuResult.DesktopSortDescending: state.SortAscending = false; break;
+            case ShellContextMenuResult.DesktopGroupNone: state.GroupMode = "None"; break;
+            case ShellContextMenuResult.DesktopGroupName: state.GroupMode = "Name"; break;
+            case ShellContextMenuResult.DesktopGroupSize: state.GroupMode = "Size"; break;
+            case ShellContextMenuResult.DesktopGroupType: state.GroupMode = "Type"; break;
+            case ShellContextMenuResult.DesktopGroupDate: state.GroupMode = "Date"; break;
+            case ShellContextMenuResult.DesktopGroupAscending: state.GroupAscending = true; break;
+            case ShellContextMenuResult.DesktopGroupDescending: state.GroupAscending = false; break;
+            case ShellContextMenuResult.DesktopAutoArrange: state.AutoArrange = !state.AutoArrange; break;
+            case ShellContextMenuResult.DesktopAlignGrid:
+                state.AlignToGrid = !state.AlignToGrid;
+                if (state.AlignToGrid)
+                    _desktopIconPlacementService.SnapToGrid(DesktopItems, state.ManagedPositions);
+                break;
+            default: return;
+        }
+
+        if (result is not (ShellContextMenuResult.DesktopViewSmall
+            or ShellContextMenuResult.DesktopViewMedium
+            or ShellContextMenuResult.DesktopViewLarge))
+            ApplyDesktopOrdering();
+        foreach (var item in DesktopItems)
+            if (state.ManagedPositions.TryGetValue(item.Path, out var position))
+                _desktopSurface?.SetScreenPosition(item, position.X, position.Y);
+        _desktopSurface?.SetViewMode(state.ViewMode);
+        ScheduleSave();
+    }
+
+    private void ApplyDesktopOrdering()
+    {
+        var state = _layout.NativeDesktop;
+        var ordered = OrderDesktopItems(DesktopItems, state).ToArray();
+        SynchronizeItems(DesktopItems, ordered);
+        if (state.AutoArrange)
+            _desktopIconPlacementService.ArrangeInOrder(ordered, state.ManagedPositions);
+    }
+
+    /// <summary>按桌面状态生成稳定的视觉顺序，避免把不同类型的排序键强制比较为 object。</summary>
+    internal static IReadOnlyList<DesktopItem> OrderDesktopItems(
+        IReadOnlyList<DesktopItem> items,
+        NativeDesktopState state)
+    {
+        IOrderedEnumerable<DesktopItem> ordered = state.GroupMode switch
+        {
+            "Size" when state.GroupAscending => items.OrderBy(GetDesktopItemSize),
+            "Size" => items.OrderByDescending(GetDesktopItemSize),
+            "Type" when state.GroupAscending => items.OrderBy(item => Path.GetExtension(item.Path), StringComparer.CurrentCultureIgnoreCase),
+            "Type" => items.OrderByDescending(item => Path.GetExtension(item.Path), StringComparer.CurrentCultureIgnoreCase),
+            "Date" when state.GroupAscending => items.OrderBy(item => item.LastWriteTicks),
+            "Date" => items.OrderByDescending(item => item.LastWriteTicks),
+            "Name" when state.GroupAscending => items.OrderBy(item => item.Name, StringComparer.CurrentCultureIgnoreCase),
+            "Name" => items.OrderByDescending(item => item.Name, StringComparer.CurrentCultureIgnoreCase),
+            _ => items.OrderBy(_ => 0)
+        };
+
+        ordered = state.SortMode switch
+        {
+            "Size" when state.SortAscending => ordered.ThenBy(GetDesktopItemSize),
+            "Size" => ordered.ThenByDescending(GetDesktopItemSize),
+            "Type" when state.SortAscending => ordered.ThenBy(item => Path.GetExtension(item.Path), StringComparer.CurrentCultureIgnoreCase),
+            "Type" => ordered.ThenByDescending(item => Path.GetExtension(item.Path), StringComparer.CurrentCultureIgnoreCase),
+            "Date" when state.SortAscending => ordered.ThenBy(item => item.LastWriteTicks),
+            "Date" => ordered.ThenByDescending(item => item.LastWriteTicks),
+            _ when state.SortAscending => ordered.ThenBy(item => item.Name, StringComparer.CurrentCultureIgnoreCase),
+            _ => ordered.ThenByDescending(item => item.Name, StringComparer.CurrentCultureIgnoreCase)
+        };
+
+        return ordered
+            .ThenBy(item => item.Name, StringComparer.CurrentCultureIgnoreCase)
+            .ThenBy(item => item.Path, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private static long GetDesktopItemSize(DesktopItem item)
+    {
+        try { return File.Exists(item.Path) ? new FileInfo(item.Path).Length : 0; }
+        catch { return 0; }
     }
 
     private async Task<IReadOnlyList<string>> WaitForDesktopCommandToSettleAsync(IReadOnlySet<string> pathsBeforeCommand)
@@ -1014,7 +1432,8 @@ public sealed class DesktopCoordinator : IDisposable
             createdPaths,
             new System.Windows.Point(screenPoint.X, screenPoint.Y),
             DesktopItems,
-            _layout.NativeDesktop.ManagedPositions);
+            _layout.NativeDesktop.ManagedPositions,
+            _layout.NativeDesktop.AlignToGrid);
         foreach (var path in createdPaths)
         {
             var item = DesktopItems.First(candidate =>
@@ -1083,46 +1502,26 @@ public sealed class DesktopCoordinator : IDisposable
                 var bottomRight = entry.Value.PointToScreen(
                     new System.Windows.Point(entry.Value.ActualWidth, entry.Value.ActualHeight));
                 return (Bounds: new Rect(topLeft, bottomRight),
-                    Group: entry.Value.Group);
+                    Group: entry.Value.ActiveGroup);
             })
             .LastOrDefault(entry => entry.Bounds.Contains(screenPoint)).Group;
 
-    private DeskGroup? FindMergeTargetAt(DeskGroup source, System.Windows.Point screenPoint)
+    private BoxTabRef? FindBoxMergeTarget(BoxTabRef source, System.Windows.Point screenPoint)
     {
-        var sourceKey = GetWindowKey(source);
-        var candidates = _windows
-            .Where(entry => entry.Value.IsVisible
-                            && !entry.Key.Equals(sourceKey, StringComparison.OrdinalIgnoreCase))
-            .Select(entry => (Bounds: entry.Value.GetMergeDropScreenBounds(), Group: entry.Value.Group))
-            .Where(entry => !entry.Bounds.IsEmpty && entry.Bounds.Contains(screenPoint))
-            .ToArray();
-        return SelectNearestMergeTarget(candidates, screenPoint);
+        var sourceHost = _boxHosts.FirstOrDefault(host => host.Tabs.Contains(source));
+        if (sourceHost is null) return null;
+        var candidates = _windows.Values.Where(window => window.IsVisible && window.ActiveTab is not null)
+            .ToDictionary(window => new WindowInteropHelper(window).Handle,
+                window => new BoxDropTarget(window.HostId, window.ActiveTab!, window.GetMergeDropScreenBounds()));
+        return BoxDropGeometry.FindTarget(sourceHost.Id,
+            NativeWindowPlacement.TopToBottom(candidates.Keys).Select(handle => candidates[handle]), screenPoint);
     }
 
-    private static DeskGroup? SelectNearestMergeTarget(
-        IReadOnlyCollection<(Rect Bounds, DeskGroup Group)> candidates,
-        System.Windows.Point screenPoint)
+    private void SetBoxMergeTarget(BoxTabRef source, BoxTabRef? target)
     {
-        if (candidates.Count == 0) return null;
-        return candidates.MinBy(entry =>
-            {
-                var deltaX = entry.Bounds.Left + entry.Bounds.Width / 2 - screenPoint.X;
-                var deltaY = entry.Bounds.Top + entry.Bounds.Height / 2 - screenPoint.Y;
-                return deltaX * deltaX + deltaY * deltaY;
-            }).Group;
-    }
-
-    internal static bool ValidateEmptyMergeTargetForSmokeTest() =>
-        SelectNearestMergeTarget([], new System.Windows.Point()) is null;
-
-    private void SetMergeDragTarget(DeskGroup source, DeskGroup? target)
-    {
-        var sourceWindow = FindWindowForGroup(source.Id);
+        var targetWindow = target is null ? null : _windows.Values.FirstOrDefault(window => window.ContainsTab(target));
         foreach (var window in _windows.Values)
-            window.SetMergeDropTarget(target is not null && window.ContainsGroup(target.Id));
-        var targetWindow = target is null ? null : FindWindowForGroup(target.Id);
-        sourceWindow?.SetMergeSourceHover(targetWindow is null ? null
-            : new Rect(targetWindow.Left, targetWindow.Top, targetWindow.Width, targetWindow.Height));
+            window.SetMergeDropTarget(ReferenceEquals(window, targetWindow));
     }
 
     private bool IsDesktopAt(System.Windows.Point screenPoint) =>
@@ -1132,222 +1531,27 @@ public sealed class DesktopCoordinator : IDisposable
 
     private void DissolveGroup(DeskGroup group)
     {
-        if (MessageBox.Show($"解散“{group.Name}”？\n文件仍保留在桌面，只会移除视觉归属。", "MiniC",
+        var owner = FindWindowForGroup(group.Id);
+        if (owner is null || MessageBox.Show(owner, $"解散“{group.Name}”？\n文件仍保留在桌面，只会移除视觉归属。", "MiniC",
                 MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
         var paths = _layout.NativeDesktop.Assignments
             .Where(entry => entry.Value.Equals(group.Id, StringComparison.OrdinalIgnoreCase))
             .Select(entry => entry.Key).ToArray();
         foreach (var path in paths) _layout.NativeDesktop.Assignments.Remove(path);
-        var remainingMembers = GetTabMembers(group).Where(member => !ReferenceEquals(member, group)).ToArray();
-        CloseWindowForGroup(group);
+        BoxTopologyService.Remove(_boxHosts, new BoxTabRef(BoxContentKind.DesktopGroup, group.Id));
         Groups.Remove(group);
-        NormalizeDetachedCluster(remainingMembers);
-        if (remainingMembers.Length > 0) ShowGroupWindow(remainingMembers[0]);
+        SyncLegacyGroupTopology();
+        EnsureGroupWindowCoverage();
         ScheduleSave();
     }
 
-    private void MergeGroups(DeskGroup source, DeskGroup target)
+    private static BoxHostState CloneHost(BoxHostState host) => new()
     {
-        if (GetWindowKey(source).Equals(GetWindowKey(target), StringComparison.OrdinalIgnoreCase)) return;
-        var sourceMembers = GetTabMembers(source);
-        var targetMembers = GetTabMembers(target);
-        var clusterId = target.TabGroupId ?? Guid.NewGuid().ToString("N");
-        var combined = targetMembers.Concat(sourceMembers).Distinct().ToArray();
-        var sourcePosition = new System.Windows.Point(source.X, source.Y);
-        ApplyGroupTopologyChange(() =>
-        {
-            for (var index = 0; index < combined.Length; index++)
-                ApplyClusterState(combined[index], target, clusterId, index);
-        }, source, window => window.PlayMergeCompletedAnimation(sourcePosition));
-    }
-
-    private void MergeTabIntoGroup(DeskGroup source, DeskGroup target)
-    {
-        if (GetWindowKey(source).Equals(GetWindowKey(target), StringComparison.OrdinalIgnoreCase)) return;
-        var remainingSourceMembers = GetTabMembers(source)
-            .Where(member => !ReferenceEquals(member, source)).ToArray();
-        var targetMembers = GetTabMembers(target);
-        var clusterId = target.TabGroupId ?? Guid.NewGuid().ToString("N");
-        var combined = BuildTabMergeMembers(targetMembers, source);
-        var sourcePosition = new System.Windows.Point(source.X, source.Y);
-        ApplyGroupTopologyChange(() =>
-        {
-            NormalizeDetachedCluster(remainingSourceMembers);
-            for (var index = 0; index < combined.Length; index++)
-                ApplyClusterState(combined[index], target, clusterId, index);
-        }, source, window => window.PlayMergeCompletedAnimation(sourcePosition));
-    }
-
-    private static void ApplyClusterState(DeskGroup member, DeskGroup target, string clusterId, int tabOrder)
-    {
-        member.TabGroupId = clusterId;
-        member.TabOrder = tabOrder;
-        member.X = target.X;
-        member.Y = target.Y;
-        member.Width = target.Width;
-        member.Height = target.Height;
-        member.IsCollapsed = target.IsCollapsed;
-    }
-
-    private static DeskGroup[] BuildTabMergeMembers(IEnumerable<DeskGroup> targetMembers, DeskGroup source) =>
-        targetMembers.Where(member => !ReferenceEquals(member, source)).Append(source).Distinct().ToArray();
-
-    internal static bool ValidateTabMergeAppendForSmokeTest()
-    {
-        var first = new DeskGroup { Name = "first" };
-        var second = new DeskGroup { Name = "second" };
-        var source = new DeskGroup { Name = "source" };
-        return BuildTabMergeMembers([first, second], source).SequenceEqual([first, second, source]);
-    }
-
-    private void DetachGroup(DeskGroup group, System.Windows.Point pointerPosition)
-    {
-        var remainingMembers = GetTabMembers(group).Where(member => !ReferenceEquals(member, group)).ToArray();
-        if (remainingMembers.Length == 0) return;
-        var sourcePosition = new System.Windows.Point(group.X, group.Y);
-        var sourceWindow = FindWindowForGroup(group.Id);
-        // 回调传入物理屏幕坐标，先通过源窗口换算为 WPF DIP，与预览使用同一坐标空间。
-        var localPointer = sourceWindow?.PointFromScreen(pointerPosition);
-        var pointer = localPointer is { } local && sourceWindow is not null
-            ? new System.Windows.Point(sourceWindow.Left + local.X, sourceWindow.Top + local.Y)
-            : pointerPosition;
-        var bounds = GroupDetachPlacement.GetBounds(pointer, new System.Windows.Size(group.Width, group.Height),
-            new Rect(SystemParameters.VirtualScreenLeft, SystemParameters.VirtualScreenTop,
-                SystemParameters.VirtualScreenWidth, SystemParameters.VirtualScreenHeight));
-        ApplyGroupTopologyChange(() =>
-        {
-            group.TabGroupId = null;
-            group.TabOrder = 0;
-            group.X = bounds.X;
-            group.Y = bounds.Y;
-            group.IsCollapsed = false;
-            NormalizeDetachedCluster(remainingMembers);
-        }, group, window => window.PlayDetachedAnimation(sourcePosition));
-    }
-
-    private void ApplyGroupTopologyChange(
-        Action change,
-        DeskGroup activeGroup,
-        Action<DeskGroupWindow> completedAnimation)
-    {
-        var snapshots = Groups.ToDictionary(group => group, GroupTopologySnapshot.Capture);
-        var expectedGroupIds = Groups.Select(group => group.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var assignmentCounts = CountAssignmentsByGroup(_layout.NativeDesktop.Assignments);
-        var arrivedThroughPreview = FindWindowForGroup(activeGroup.Id)?.HasGroupDragPreview == true;
-        try
-        {
-            change();
-            ValidateGroupTopology(Groups, expectedGroupIds, assignmentCounts, _layout.NativeDesktop.Assignments);
-            SynchronizeGroupWindows(activeGroup);
-            if (!arrivedThroughPreview && FindWindowForGroup(activeGroup.Id) is { } activeWindow)
-                completedAnimation(activeWindow);
-            ScheduleSave();
-        }
-        catch (Exception exception)
-        {
-            foreach (var (group, snapshot) in snapshots) snapshot.Restore(group);
-            SynchronizeGroupWindows(activeGroup);
-            MessageBox.Show($"合并未完成，已恢复原收纳盒和文件归属。\n\n{exception.Message}",
-                "MiniC", MessageBoxButton.OK, MessageBoxImage.Warning);
-        }
-    }
-
-    private void SynchronizeGroupWindows(DeskGroup activeGroup)
-    {
-        // 差量修复宿主，未参与本次合并/拆分的收纳盒保持窗口、内容和动画时钟不变。
-        EnsureGroupWindowCoverage();
-        if (FindWindowForGroup(activeGroup.Id) is { } activeWindow && !ReferenceEquals(activeWindow.Group, activeGroup))
-            activeWindow.ConfigureTabs(GetTabMembers(activeGroup), activeGroup);
-        _desktopSurface?.RefreshDesktopPlacement();
-    }
-
-    private static Dictionary<string, int> CountAssignmentsByGroup(
-        IReadOnlyDictionary<string, string> assignments) =>
-        assignments.Values.GroupBy(groupId => groupId, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(group => group.Key, group => group.Count(), StringComparer.OrdinalIgnoreCase);
-
-    private static void ValidateGroupTopology(
-        IReadOnlyCollection<DeskGroup> groups,
-        IReadOnlySet<string> expectedGroupIds,
-        IReadOnlyDictionary<string, int> expectedAssignmentCounts,
-        IReadOnlyDictionary<string, string> assignments)
-    {
-        var groupIds = groups.Select(group => group.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        if (groupIds.Count != groups.Count || !groupIds.SetEquals(expectedGroupIds))
-            throw new InvalidOperationException("合并过程中收纳盒数量或标识发生了变化。");
-        var currentAssignmentCounts = CountAssignmentsByGroup(assignments);
-        if (expectedAssignmentCounts.Count != currentAssignmentCounts.Count
-            || expectedAssignmentCounts.Any(entry =>
-                currentAssignmentCounts.GetValueOrDefault(entry.Key) != entry.Value)
-            || currentAssignmentCounts.Keys.Any(groupId => !groupIds.Contains(groupId)))
-            throw new InvalidOperationException("收纳盒文件归属在合并过程中发生了变化。");
-
-        foreach (var cluster in groups.Where(group => group.TabGroupId is not null)
-                     .GroupBy(group => group.TabGroupId!, StringComparer.OrdinalIgnoreCase))
-        {
-            var orders = cluster.Select(group => group.TabOrder).Order().ToArray();
-            if (orders.Length < 2 || !orders.SequenceEqual(Enumerable.Range(0, orders.Length)))
-                throw new InvalidOperationException("合并后的标签顺序不完整。");
-        }
-    }
-
-    internal static bool ValidateGroupTopologyGuardForSmokeTest()
-    {
-        var first = new DeskGroup { Id = "first", Name = "first", TabGroupId = "cluster", TabOrder = 0 };
-        var second = new DeskGroup { Id = "second", Name = "second", TabGroupId = "cluster", TabOrder = 1 };
-        DeskGroup[] groups = [first, second];
-        var assignments = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-            { ["item-a"] = first.Id, ["item-b"] = second.Id };
-        var groupIds = groups.Select(group => group.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var counts = CountAssignmentsByGroup(assignments);
-        ValidateGroupTopology(groups, groupIds, counts, assignments);
-        try
-        {
-            ValidateGroupTopology([first], groupIds, counts, assignments);
-            return false;
-        }
-        catch (InvalidOperationException)
-        {
-            return true;
-        }
-    }
-
-    private readonly record struct GroupTopologySnapshot(
-        string? TabGroupId,
-        int TabOrder,
-        double X,
-        double Y,
-        double Width,
-        double Height,
-        bool IsCollapsed)
-    {
-        public static GroupTopologySnapshot Capture(DeskGroup group) => new(
-            group.TabGroupId, group.TabOrder, group.X, group.Y,
-            group.Width, group.Height, group.IsCollapsed);
-
-        public void Restore(DeskGroup group)
-        {
-            group.TabGroupId = TabGroupId;
-            group.TabOrder = TabOrder;
-            group.X = X;
-            group.Y = Y;
-            group.Width = Width;
-            group.Height = Height;
-            group.IsCollapsed = IsCollapsed;
-        }
-    }
-
-    private static void NormalizeDetachedCluster(IReadOnlyList<DeskGroup> members)
-    {
-        if (members.Count == 0) return;
-        if (members.Count == 1)
-        {
-            members[0].TabGroupId = null;
-            members[0].TabOrder = 0;
-            return;
-        }
-        for (var index = 0; index < members.Count; index++) members[index].TabOrder = index;
-    }
+        Id = host.Id, Tabs = host.Tabs.ToList(), ActiveTab = host.ActiveTab,
+        X = host.X, Y = host.Y, Width = host.Width, Height = host.Height,
+        IsCollapsed = host.IsCollapsed, Theme = host.Theme, Material = host.Material,
+        Opacity = host.Opacity, Appearance = host.Appearance
+    };
 
     private void ToggleBoxes()
     {
@@ -1380,34 +1584,8 @@ public sealed class DesktopCoordinator : IDisposable
         }
     }
 
-    private void ApplyTheme(string theme)
-    {
-        _layout.DefaultTheme = theme;
-        foreach (var group in Groups) group.Theme = theme;
-        ScheduleSave();
-    }
-
-    private void ApplyMaterial(string material)
-    {
-        _layout.DefaultMaterial = material;
-        foreach (var group in Groups) group.Material = material;
-        ScheduleSave();
-    }
-
-    private void ApplyOpacity(double opacity)
-    {
-        _layout.DefaultOpacity = opacity;
-        foreach (var group in Groups) group.Opacity = opacity;
-        ScheduleSave();
-    }
-
-    private (string Theme, string Material, double Opacity) GetUnifiedStyle()
-    {
-        var first = Groups.FirstOrDefault();
-        return (_layout.DefaultTheme ?? first?.Theme ?? "White",
-            _layout.DefaultMaterial ?? first?.Material ?? "Clear",
-            _layout.DefaultOpacity ?? first?.Opacity ?? 0.62);
-    }
+    private static (string Theme, string Material, double Opacity) GetDefaultStyle() =>
+        (BoxAppearanceDefaults.Theme, BoxAppearanceDefaults.Material, BoxAppearanceDefaults.Opacity);
 
     private void ScheduleSave()
     {
@@ -1437,6 +1615,10 @@ public sealed class DesktopCoordinator : IDisposable
                 TabGroupId = group.TabGroupId,
                 TabOrder = group.TabOrder
             }).ToList();
+            BoxTopologyService.Validate(_boxHosts,
+                Groups.Select(group => new BoxTabRef(BoxContentKind.DesktopGroup, group.Id))
+                    .Concat(_widgets.Keys.Select(id => new BoxTabRef(BoxContentKind.Widget, id))).ToArray());
+            _layout.BoxHosts = _boxHosts;
             await _layoutStore.SaveAsync(_layout);
         }
         finally
@@ -1464,6 +1646,8 @@ public sealed class DesktopCoordinator : IDisposable
         _recycleBinIcons.Stop();
         _saveTimer.Stop();
         _reconcileTimer.Stop();
+        _wallpaperRefreshTimer.Stop();
+        _widgetReminderTimer.Stop();
         await _renameGate.WaitAsync();
         _renameGate.Release();
         RestoreNativePositions(_layout.NativeDesktop.Assignments.Keys);
@@ -1475,11 +1659,15 @@ public sealed class DesktopCoordinator : IDisposable
         _desktopSurface = null;
         foreach (var window in _windows.Values) window.ClosePermanently();
         _windows.Clear();
+        _widgets.Clear();
         _shutdownApplication();
     }
 
     private IntPtr MessageWindowProc(IntPtr hwnd, int message, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
+        if (message == DisplayChangedMessage) GpuGlassRenderService.InvalidateOutputsIfRunning();
+        if (message is SettingsChangedMessage or DisplayChangedMessage or DpiChangedMessage or ThemeChangedMessage)
+            ScheduleWallpaperRefresh();
         if (message == ShellChangeMessage)
         {
             _desktopFileService.HandleShellChangeNotification(wParam, lParam);
@@ -1509,6 +1697,8 @@ public sealed class DesktopCoordinator : IDisposable
         Microsoft.Win32.SystemEvents.UserPreferenceChanged -= SystemDisplaySettingsChanged;
         _saveTimer.Stop();
         _reconcileTimer.Stop();
+        _wallpaperRefreshTimer.Stop();
+        _widgetReminderTimer.Stop();
         RestoreNativePositions(_layout.NativeDesktop.Assignments.Keys);
         RestoreNativePositions(DesktopItems.Where(item => !item.IsVirtual).Select(item => item.Path));
         _ = _nativeDesktopService.SetDesktopIconLayerVisible(true);
@@ -1516,9 +1706,9 @@ public sealed class DesktopCoordinator : IDisposable
         _desktopFileService.Dispose();
         foreach (var window in _windows.Values) window.ClosePermanently();
         _windows.Clear();
+        _widgets.Clear();
         _desktopSurface?.ClosePermanently();
         _desktopSurface = null;
-        _trayPanel?.Close();
         _trayIcon.Visible = false;
         _trayIcon.ContextMenuStrip?.Dispose();
         _trayIcon.Dispose();

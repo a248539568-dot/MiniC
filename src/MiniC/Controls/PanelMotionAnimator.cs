@@ -20,7 +20,8 @@ internal static class PanelMotionAnimator
         var positions = new Dictionary<UIElement, ItemPosition>();
         foreach (UIElement child in panel.Children)
         {
-            if (child.IsArrangeValid && child.RenderSize.Width > 0)
+            // 集合换位会先标记 Arrange 无效，但旧视觉位置仍有效，必须保留以连续衔接。
+            if (child.RenderSize.Width > 0)
                 positions[child] = new ItemPosition(child.TranslatePoint(new Point(), panel), VisualTreeHelper.GetOffset(child));
         }
         return positions;
@@ -47,12 +48,13 @@ internal static class PanelMotionAnimator
                 continue;
             }
 
-            var transform = new TranslateTransform();
+            // 时钟首帧尚未采样时也保持原可见位置，防止先跳到目标再回弹。
+            var transform = new TranslateTransform(deltaX, deltaY);
             child.RenderTransform = transform;
             transform.BeginAnimation(TranslateTransform.XProperty,
-                new DoubleAnimation(deltaX, 0, MoveDuration) { EasingFunction = MoveEasing, FillBehavior = FillBehavior.Stop });
+                new DoubleAnimation(0, MoveDuration) { EasingFunction = MoveEasing });
             transform.BeginAnimation(TranslateTransform.YProperty,
-                new DoubleAnimation(deltaY, 0, MoveDuration) { EasingFunction = MoveEasing, FillBehavior = FillBehavior.Stop });
+                new DoubleAnimation(0, MoveDuration) { EasingFunction = MoveEasing });
         }
     }
 

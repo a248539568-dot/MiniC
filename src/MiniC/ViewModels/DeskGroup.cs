@@ -1,4 +1,6 @@
 using System.Collections.ObjectModel;
+using MiniC.Models;
+using MiniC.Services;
 using MediaBrush = System.Windows.Media.Brush;
 
 namespace MiniC.ViewModels;
@@ -11,13 +13,13 @@ public sealed class DeskGroup : ObservableObject
     private string _name = "新收纳盒";
     private double _x = 36;
     private double _y = 104;
-    private double _width = 380;
-    private double _height = 320;
+    private double _width = 340;
+    private double _height = 380;
     private bool _isCollapsed;
     private bool _isRenaming;
     private string _editName = string.Empty;
     private string _theme = "White";
-    private string _material = "Clear";
+    private string _material = "Crystal";
     private double _opacity = 0.62;
     private string _viewMode = "Icons";
     private bool _isActive;
@@ -45,6 +47,8 @@ public sealed class DeskGroup : ObservableObject
             OnPropertyChanged(nameof(HeaderBackground));
             OnPropertyChanged(nameof(PrimaryForeground));
             OnPropertyChanged(nameof(SecondaryForeground));
+            OnPropertyChanged(nameof(CountBackground));
+            OnPropertyChanged(nameof(CountForeground));
             OnPropertyChanged(nameof(ItemHoverBackground));
             OnPropertyChanged(nameof(ItemSelectedBackground));
             OnPropertyChanged(nameof(ItemSelectedBorder));
@@ -59,17 +63,17 @@ public sealed class DeskGroup : ObservableObject
         get => _material;
         set
         {
-            if (!SetField(ref _material, value)) return;
+            if (!SetField(ref _material, GroupMaterialBrushes.Normalize(value))) return;
             NotifyGlassChanged();
         }
     }
 
     public double Opacity
     {
-        get => _opacity;
+        get => IsSolid ? 1 : _opacity;
         set
         {
-            var normalized = Math.Clamp(value, 0.22, 0.92);
+            var normalized = BackgroundTransparency.NormalizeOpacity(value);
             if (!SetField(ref _opacity, normalized)) return;
             NotifyGlassChanged();
         }
@@ -87,9 +91,46 @@ public sealed class DeskGroup : ObservableObject
         }
     }
     public MediaBrush GlassBackground => ThemeBrush("background");
-    public MediaBrush HeaderBackground => ThemeBrush("header");
+    private MaterialPreferences _appearance = new();
+    public MaterialPreferences Appearance
+    {
+        get => _appearance;
+        set
+        {
+            if (!SetField(ref _appearance, value.NormalizeFor(Material))) return;
+            OnPropertyChanged(nameof(Corners));
+            OnPropertyChanged(nameof(HeaderCorners));
+            OnPropertyChanged(nameof(UsesWallpaper));
+            OnPropertyChanged(nameof(IsSeeThrough));
+            OnPropertyChanged(nameof(IsFrosted));
+            OnPropertyChanged(nameof(IsFrostedSeeThrough));
+            OnPropertyChanged(nameof(IsCrystalSeeThrough));
+            OnPropertyChanged(nameof(GlassBackground));
+            OnPropertyChanged(nameof(HeaderBackground));
+        }
+    }
+    public System.Windows.CornerRadius Corners => new(Appearance.Radius);
+    public System.Windows.CornerRadius HeaderCorners => new(Appearance.Radius, Appearance.Radius, 0, 0);
+    // The source preference is separate from material and foreground styling.
+    public bool UsesWallpaper => !IsSolid && !IsSeeThrough;
+    public bool IsSeeThrough => !IsSolid && Appearance.ThroughFor(Material);
+    private bool _composedBackdropActive;
+    public bool ComposedBackdropActive
+    {
+        get => _composedBackdropActive;
+        internal set => SetField(ref _composedBackdropActive, value);
+    }
+    public bool IsFrostedSeeThrough => IsFrosted && IsSeeThrough;
+    public bool IsCrystalSeeThrough => IsCrystal && IsSeeThrough;
+    public bool IsCrystal => Material == "Crystal";
+    public bool IsFrosted => Material == "Frosted";
+    public bool IsSolid => Material == "Solid";
+    public MediaBrush HeaderBackground => System.Windows.Media.Brushes.Transparent;
+    public System.Windows.Media.Effects.Effect ContentShadow => GroupMaterialBrushes.ContentShadow;
     public MediaBrush PrimaryForeground => ThemeBrush("primary");
     public MediaBrush SecondaryForeground => ThemeBrush("secondary");
+    public MediaBrush CountBackground => ThemeBrush("countBackground");
+    public MediaBrush CountForeground => ThemeBrush("countForeground");
     public MediaBrush ItemHoverBackground => ThemeBrush("hover");
     public MediaBrush ItemSelectedBackground => ThemeBrush("selected");
     public MediaBrush ItemSelectedBorder => ThemeBrush("selectedBorder");
@@ -98,6 +139,18 @@ public sealed class DeskGroup : ObservableObject
     public MediaBrush GlassMenuHover => ThemeBrush("menuHover");
     private void NotifyGlassChanged()
     {
+        OnPropertyChanged(nameof(IsCrystal));
+        OnPropertyChanged(nameof(IsFrosted));
+        OnPropertyChanged(nameof(IsSolid));
+        OnPropertyChanged(nameof(Opacity));
+        OnPropertyChanged(nameof(IsFrostedSeeThrough));
+        OnPropertyChanged(nameof(IsCrystalSeeThrough));
+        OnPropertyChanged(nameof(UsesWallpaper));
+        OnPropertyChanged(nameof(IsSeeThrough));
+        OnPropertyChanged(nameof(PrimaryForeground));
+        OnPropertyChanged(nameof(SecondaryForeground));
+        OnPropertyChanged(nameof(CountBackground));
+        OnPropertyChanged(nameof(CountForeground));
         OnPropertyChanged(nameof(GlassBackground));
         OnPropertyChanged(nameof(HeaderBackground));
         OnPropertyChanged(nameof(GlassMenuBackground));
@@ -107,21 +160,16 @@ public sealed class DeskGroup : ObservableObject
 
     private MediaBrush ThemeBrush(string role)
     {
-        if (role == "background") return GlassBrush();
+        if (role == "background") return GroupMaterialBrushes.Background(Theme, Material, Opacity);
+        // The shared drop shadow protects glyphs on both bright and dark glass backgrounds.
         var color = (Theme, role) switch
         {
-            ("Graphite", "header") => Material == "Satin" ? "#42FFFFFF" : "#28FFFFFF",
-            (_, "header") => Material == "Frosted" ? "#52FFFFFF" : Material == "Satin" ? "#42FFFFFF" : "#2EFFFFFF",
-            ("Graphite", "menu") => "#ED20242E",
-            (_, "menu") => "#EAF7FAFF",
-            ("Graphite", "menuBorder") => "#70FFFFFF",
-            (_, "menuBorder") => "#D8FFFFFF",
-            ("Graphite", "menuHover") => "#38FFFFFF",
-            (_, "menuHover") => "#486B88AC",
-            ("Graphite", "primary") => "#FFF5F7FB",
-            (_, "primary") => "#E5222936",
-            ("Graphite", "secondary") => "#B9B7C0D2",
-            (_, "secondary") => "#A85A6475",
+            (_, "primary" or "countForeground") => "#FFFFFFFF",
+            (_, "secondary") => "#E6FFFFFF",
+            (_, "countBackground") => "#B8242B38",
+            (_, "menu") => "#F0202430",
+            (_, "menuBorder") => "#50FFFFFF",
+            (_, "menuHover") => "#38FFFFFF",
             ("Blue", "hover") => "#386AADE0",
             ("Mint", "hover") => "#3851A98B",
             ("Purple", "hover") => "#387E6BC2",
@@ -145,34 +193,4 @@ public sealed class DeskGroup : ObservableObject
         return (MediaBrush)new System.Windows.Media.BrushConverter().ConvertFromString(color)!;
     }
 
-    private MediaBrush GlassBrush()
-    {
-        var color = Theme switch
-        {
-            "Blue" => System.Windows.Media.Color.FromRgb(221, 235, 255),
-            "Mint" => System.Windows.Media.Color.FromRgb(220, 247, 238),
-            "Purple" => System.Windows.Media.Color.FromRgb(234, 224, 255),
-            "Amber" => System.Windows.Media.Color.FromRgb(255, 240, 210),
-            "Graphite" => System.Windows.Media.Color.FromRgb(27, 30, 41),
-            _ => System.Windows.Media.Color.FromRgb(247, 250, 255)
-        };
-        var alphaScale = Material switch
-        {
-            "Frosted" => 1.12,
-            "Crystal" => 0.76,
-            "Satin" => 0.92,
-            _ => 1.0
-        };
-        if (Material == "Frosted" && Theme != "Graphite") color = Mix(color, System.Windows.Media.Colors.White, 0.18);
-        if (Material == "Satin") color = Mix(color, Theme == "Graphite" ? System.Windows.Media.Colors.Black : System.Windows.Media.Colors.White, 0.08);
-        var glassAlpha = 0.13 + Opacity * 0.38;
-        color.A = (byte)Math.Clamp(Math.Round(255 * glassAlpha * alphaScale), 36, 148);
-        return new System.Windows.Media.SolidColorBrush(color);
-    }
-
-    private static System.Windows.Media.Color Mix(System.Windows.Media.Color source, System.Windows.Media.Color target, double amount) =>
-        System.Windows.Media.Color.FromRgb(
-            (byte)Math.Round(source.R + (target.R - source.R) * amount),
-            (byte)Math.Round(source.G + (target.G - source.G) * amount),
-            (byte)Math.Round(source.B + (target.B - source.B) * amount));
 }

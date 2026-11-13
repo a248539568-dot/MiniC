@@ -1,7 +1,7 @@
 #define AppName "MiniC"
-#define AppVersion "0.59.0"
+#define AppVersion "0.60.78"
 #define AppExeName "MiniC.exe"
-#define PublishDir "..\dist\MiniC-v0.59.0-win-x64"
+#define PublishDir "..\dist\MiniC-v0.60.78-win-x64"
 
 [Setup]
 AppId={{B9E2891D-9EC8-4C33-8B0B-58F25767C4D1}
@@ -15,7 +15,7 @@ DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-MinVersion=10.0.17763
+MinVersion=10.0.22000
 OutputDir=..\dist
 OutputBaseFilename=MiniC-Setup-v{#AppVersion}
 SetupIconFile=..\src\MiniC\icon.ico
@@ -77,12 +77,10 @@ begin
     RegValueExists(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'DeskNest');
   Result := True;
 end;
-
 function ShouldMigrateStartup(): Boolean;
 begin
   Result := LegacyStartupEnabled;
 end;
-
 function FindWindow(lpClassName, lpWindowName: String): HWND;
   external 'FindWindowW@user32.dll stdcall';
 function FindWindowEx(hwndParent, hwndChildAfter: HWND;
@@ -117,7 +115,6 @@ begin
       ShowWindow(ListViewWindow, 5);
   end;
 end;
-
 function StartMenuShortcutMissing(): Boolean;
 begin
   Result := not FileExists(ExpandConstant('{autoprograms}\{#AppName}.lnk'));

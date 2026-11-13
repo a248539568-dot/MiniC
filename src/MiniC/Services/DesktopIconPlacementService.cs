@@ -66,7 +66,8 @@ public sealed class DesktopIconPlacementService
         IReadOnlyList<string> paths,
         System.Windows.Point screenPoint,
         IReadOnlyList<DesktopItem> visibleItems,
-        IDictionary<string, DesktopIconPositionState> positions)
+        IDictionary<string, DesktopIconPositionState> positions,
+        bool alignToGrid = true)
     {
         var moving = paths.ToHashSet(StringComparer.OrdinalIgnoreCase);
         var occupied = visibleItems
@@ -93,13 +94,50 @@ public sealed class DesktopIconPlacementService
             var targetY = hasAnchor && hasOriginal
                 ? original!.Y + deltaY
                 : requestedY + index / 4 * CellHeight;
-            var cell = FindNearestAvailable(
-                targetX,
-                targetY,
-                occupied);
+            var cell = alignToGrid
+                ? FindNearestAvailable(targetX, targetY, occupied)
+                : new GridCell(targetX, targetY);
             occupied.Add(cell);
             positions[paths[index]] = new DesktopIconPositionState { X = cell.X, Y = cell.Y };
         }
+    }
+
+    /// <summary>按传入顺序重排桌面项目，使用与桌面图标相同的固定网格。</summary>
+    public bool ArrangeInOrder(
+        IReadOnlyList<DesktopItem> orderedItems,
+        IDictionary<string, DesktopIconPositionState> positions)
+    {
+        var cells = EnumerateCellsColumnFirst().Take(orderedItems.Count).ToArray();
+        var changed = false;
+        for (var index = 0; index < cells.Length; index++)
+        {
+            if (!positions.TryGetValue(orderedItems[index].Path, out var position)) continue;
+            if (position.X == cells[index].X && position.Y == cells[index].Y) continue;
+            position.X = cells[index].X;
+            position.Y = cells[index].Y;
+            changed = true;
+        }
+        return changed;
+    }
+
+    /// <summary>将已有项目吸附到当前固定网格。</summary>
+    public bool SnapToGrid(
+        IReadOnlyList<DesktopItem> items,
+        IDictionary<string, DesktopIconPositionState> positions)
+    {
+        var occupied = new List<GridCell>();
+        var changed = false;
+        foreach (var item in items.Where(item => positions.ContainsKey(item.Path)))
+        {
+            var position = positions[item.Path];
+            var cell = FindNearestAvailable(position.X, position.Y, occupied);
+            occupied.Add(cell);
+            if (cell.X == position.X && cell.Y == position.Y) continue;
+            position.X = cell.X;
+            position.Y = cell.Y;
+            changed = true;
+        }
+        return changed;
     }
 
     /// <summary>仿照 Windows 桌面自动排列，按当前视觉顺序压紧到连续网格。</summary>

@@ -4,12 +4,12 @@
 
 ## Requirements
 
-- Windows 10 1809+ or Windows 11
+- Windows 11 Build 22000+
 - .NET 10 SDK
 - An editor compatible with the selected .NET 10 SDK; repository-local CLI builds have been verified
 - Inno Setup 6 only when creating an installer
 
-MiniC targets `net10.0-windows`, WPF, and a small Windows Forms tray integration. Meaningful runtime validation requires an interactive Windows desktop session.
+MiniC targets `net10.0-windows10.0.26100.0`, WPF, and a small Windows Forms tray integration. Live crystal uses shared DXGI/D3D11 GPU textures and Composition swap chains without per-frame CPU background readback. Meaningful runtime validation requires a Windows desktop session.
 
 ## Build and Run
 
@@ -18,12 +18,12 @@ The source repository excludes `.dotnet`, `.nuget`, `.local`, and `dist`. On a f
 ```powershell
 .\.dotnet\dotnet.exe restore .\MiniC.sln --configfile .\NuGet.Publish.Config
 .\.dotnet\dotnet.exe build .\MiniC.sln -c Release --no-restore
-& .\src\MiniC\bin\Release\net10.0-windows\MiniC.exe
+& .\src\MiniC\bin\Release\net10.0-windows10.0.26100.0\MiniC.exe
 ```
 
 Close other MiniC instances before debugging and verify that Explorer's native icons return after the debugger exits.
 
-The application has no third-party NuGet packages. The test project requires Microsoft.NET.Test.Sdk 17.14.1, xunit 2.9.3, and xunit.runner.visualstudio 3.1.4. The default NuGet.Config clears package sources; the explicit restore configuration enables nuget.org. Use `--no-restore` only after restoring successfully. Replace the local SDK path with `dotnet` when using a system SDK.
+The application uses Microsoft.Data.Sqlite 10.0.12, lunar-csharp 1.6.8 and Vortice.Direct3D11 3.8.3 with its DXGI/SharpGen dependencies. The test project requires Microsoft.NET.Test.Sdk 17.14.1, xunit 2.9.3, and xunit.runner.visualstudio 3.1.4. The default NuGet.Config clears package sources; the explicit restore configuration enables nuget.org. Use `--no-restore` only after restoring successfully. Run `tools/Compile-CrystalShader.ps1` after editing shaders; Windows SDK fxc is required. Replace the local SDK path with `dotnet` when using a system SDK.
 
 ## Main Entry Points
 
@@ -60,15 +60,7 @@ Build and run the independent unit tests first:
 
 The September 10, 2026 baseline includes a fresh restore using an empty package cache, a clean Release build, five passing unit tests, and nine passing isolated smoke tests. See the [handover record (Chinese)](../HANDOVER.md) for limitations and outstanding issues.
 
-Run a relevant smoke test through the repository-local runtime:
-
-```powershell
-.\.dotnet\dotnet.exe .\src\MiniC\bin\Release\net10.0-windows\MiniC.dll `
-  --startup-smoke-test
-if ($LASTEXITCODE -ne 0) { throw "smoke test failed: $LASTEXITCODE" }
-```
-
-Available tests cover multi-item layout, rename policy, file transfer, box organization, marquee selection, drag previews, desktop drop targets, interactive layering, Explorer icon visibility, and startup. Tests that alter Explorer visibility require a recoverable interactive desktop session.
+Do not run the former application smoke-test arguments. Daily verification uses Release builds and unit tests that never show a window or take over Explorer. Validate real desktop interactions manually in a separate test session, never automatically on an occupied desktop.
 
 ## Release
 

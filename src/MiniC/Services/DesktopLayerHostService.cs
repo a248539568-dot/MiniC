@@ -1,4 +1,6 @@
 using System.Runtime.InteropServices;
+using System.Windows;
+using System.Windows.Interop;
 
 namespace MiniC.Services;
 
@@ -35,6 +37,24 @@ public sealed class DesktopLayerHostService
                && ((updatedStyle & WsExNoActivate) != 0) == preventActivation;
     }
 
+    internal bool AllowsMouseActivation(nint windowHandle) =>
+        windowHandle != 0 && IsWindow(windowHandle)
+        && (GetWindowLongPtr(windowHandle, GwlExStyle).ToInt64() & WsExNoActivate) == 0;
+
+    /// <summary>
+    /// 收纳盒与桌面组件共用的激活策略：窗口始终保留鼠标激活能力，
+    /// 启用时交给 Windows 激活并提升；不在鼠标操作中主动降低窗口层级。
+    /// </summary>
+    public bool SetActivationEnabled(Window window, bool enabled, Action restoreIdlePlacement)
+    {
+        if (!window.IsLoaded) return false;
+        var handle = new WindowInteropHelper(window).Handle;
+        if (handle == 0 || !ConfigureAsDesktopToolWindow(handle, preventActivation: false)) return false;
+        if (enabled) return window.IsActive || window.Activate();
+        if (!window.IsActive) restoreIdlePlacement();
+        return true;
+    }
+
     /// <summary>
     /// 限定桌面窗口真正占用的屏幕区域。传入 null 恢复完整窗口区域，空集合则让窗口完全不参与命中测试。
     /// Windows 在成功后接管合并区域句柄，调用方无需释放。
@@ -62,13 +82,16 @@ public sealed class DesktopLayerHostService
     }
 
     /// <summary>
-    /// 把透明 WPF 窗口放到 Explorer 桌面正上方、所有普通应用正下方，并禁止窗口激活。
+    /// 把透明 WPF 窗口放到 Explorer 桌面正上方、所有普通应用正下方；是否禁止激活由参数决定。
     /// 不使用跨进程 SetParent，避免 AllowsTransparency 窗口停止渲染。
     /// </summary>
     public DesktopLayerAttachResult TryPlaceAboveDesktopContent(nint windowHandle, bool preventActivation = true)
     {
         if (windowHandle == 0 || !IsWindow(windowHandle) || !GetWindowRect(windowHandle, out var bounds))
             return new(false, 0, "桌面显示层窗口尚未创建。");
+        // Modal dialogs disable their owner. Moving that owner also lowers its dialog.
+        if (!IsWindowEnabled(windowHandle))
+            return new(false, 0, "模态提示打开期间保留所属窗口层级。");
 
         var hostHandle = ExplorerDesktopWindowService.FindContentHost();
         if (hostHandle == 0)
@@ -100,6 +123,8 @@ public sealed class DesktopLayerHostService
     {
         if (windowHandle == 0 || !IsWindow(windowHandle) || !GetWindowRect(windowHandle, out var bounds))
             return new(false, 0, "桌面图标层窗口尚未创建。");
+        if (!IsWindowEnabled(windowHandle))
+            return new(false, 0, "模态提示打开期间保留所属窗口层级。");
 
         var hostHandle = ExplorerDesktopWindowService.FindContentHost();
         if (hostHandle == 0)
@@ -108,10 +133,11 @@ public sealed class DesktopLayerHostService
             return new(false, 0, "桌面图标层不是独立顶层窗口。");
         if (!ConfigureAsDesktopToolWindow(windowHandle, preventActivation))
             return new(false, 0, "桌面图标层无法切换为非激活工具窗口。");
-        if (IsPlacedAboveDesktopContent(windowHandle, hostHandle))
-            return new(true, hostHandle, 0, "桌面图标层层级已正确，无需调整。");
-
         var zOrderAnchor = GetWindow(hostHandle, GwHwndPrev);
+        // Being above Explorer is insufficient: the full-screen icon layer must also
+        // stay below every box, even after a menu popup changes window activation.
+        if (IsClosestToDesktop(windowHandle, zOrderAnchor))
+            return new(true, hostHandle, 0, "桌面图标层已贴近 Explorer 桌面。");
         if (zOrderAnchor != windowHandle
             && !SetWindowPos(windowHandle, ResolveZOrderAnchor(hostHandle, zOrderAnchor),
                 bounds.Left, bounds.Top, bounds.Right - bounds.Left, bounds.Bottom - bounds.Top,
@@ -123,22 +149,6 @@ public sealed class DesktopLayerHostService
         return new(true, hostHandle, zOrderAnchor, "桌面图标层已位于收纳盒下方");
     }
 
-    /// <summary>将正在交互的收纳盒稳定放到 MiniC 桌面窗口最前，但仍位于普通应用下方。</summary>
-    public bool BringToFrontWithinDesktopLayer(nint windowHandle, bool preventActivation = true)
-    {
-        if (windowHandle == 0 || !IsWindow(windowHandle) || !GetWindowRect(windowHandle, out var bounds))
-            return false;
-        var hostHandle = ExplorerDesktopWindowService.FindContentHost();
-        if (hostHandle == 0 || !ConfigureAsDesktopToolWindow(windowHandle, preventActivation)) return false;
-
-        if (GetWindowThreadProcessId(windowHandle, out var processId) == 0) return false;
-        var externalWindowAboveLayer = FindFirstExternalWindowAboveDesktop(hostHandle, processId);
-
-        return SetWindowPos(windowHandle,
-            ResolveZOrderAnchor(hostHandle, externalWindowAboveLayer),
-            bounds.Left, bounds.Top, bounds.Right - bounds.Left, bounds.Bottom - bounds.Top,
-            SwpNoActivate | SwpShowWindow);
-    }
 
     /// <summary>确认一个顶层窗口在 Z 序中位于另一窗口上方。</summary>
     public bool IsWindowAbove(nint upperWindow, nint lowerWindow)
@@ -156,6 +166,9 @@ public sealed class DesktopLayerHostService
 
     private static nint ResolveZOrderAnchor(nint desktopHost, nint candidate) =>
         candidate == 0 ? desktopHost : candidate;
+
+    internal static bool IsClosestToDesktop(nint windowHandle, nint windowAboveDesktop) =>
+        windowHandle != 0 && windowAboveDesktop == windowHandle;
 
     internal static bool ValidateZOrderFallbackForSmokeTest()
     {
@@ -232,6 +245,10 @@ public sealed class DesktopLayerHostService
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool IsWindowVisible(nint windowHandle);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsWindowEnabled(nint windowHandle);
 
     [DllImport("user32.dll")]
     private static extern uint GetWindowThreadProcessId(nint windowHandle, out uint processId);

@@ -7,6 +7,8 @@ internal sealed class InlineFileRenameSession
 {
     private readonly Dictionary<DesktopItem, Task<bool>> _pending = [];
 
+    public bool HasPendingCommits => _pending.Count > 0;
+
     public bool IsCommitting(DesktopItem item) => _pending.ContainsKey(item);
 
     public bool Cancel(DesktopItem item)

@@ -36,12 +36,25 @@ public partial class DesktopSurfaceWindow : Window
 
     public static readonly DependencyProperty IsItemDragActiveProperty = DependencyProperty.Register(
         nameof(IsItemDragActive), typeof(bool), typeof(DesktopSurfaceWindow), new PropertyMetadata(false));
+    public static readonly DependencyProperty TileWidthProperty = DependencyProperty.Register(
+        nameof(TileWidth), typeof(double), typeof(DesktopSurfaceWindow), new PropertyMetadata(82d));
+    public static readonly DependencyProperty TileHeightProperty = DependencyProperty.Register(
+        nameof(TileHeight), typeof(double), typeof(DesktopSurfaceWindow), new PropertyMetadata(88d));
+    public static readonly DependencyProperty IconSizeProperty = DependencyProperty.Register(
+        nameof(IconSize), typeof(double), typeof(DesktopSurfaceWindow), new PropertyMetadata(46d));
+    public static readonly DependencyProperty LabelWidthProperty = DependencyProperty.Register(
+        nameof(LabelWidth), typeof(double), typeof(DesktopSurfaceWindow), new PropertyMetadata(72d));
 
     public bool IsItemDragActive
     {
         get => (bool)GetValue(IsItemDragActiveProperty);
         private set => SetValue(IsItemDragActiveProperty, value);
     }
+
+    public double TileWidth { get => (double)GetValue(TileWidthProperty); private set => SetValue(TileWidthProperty, value); }
+    public double TileHeight { get => (double)GetValue(TileHeightProperty); private set => SetValue(TileHeightProperty, value); }
+    public double IconSize { get => (double)GetValue(IconSizeProperty); private set => SetValue(IconSizeProperty, value); }
+    public double LabelWidth { get => (double)GetValue(LabelWidthProperty); private set => SetValue(LabelWidthProperty, value); }
 
     public DesktopSurfaceWindow(
         ObservableCollection<DesktopItem> items,
@@ -65,7 +78,34 @@ public partial class DesktopSurfaceWindow : Window
         _marqueeSelection = new MarqueeSelectionController(
             SelectionSurface, SelectionMarquee, () => _items, FindItemTile);
         DataContext = _items;
+        SetViewMode("Medium");
         UpdateDisplayBounds();
+    }
+
+    public void SetViewMode(string mode)
+    {
+        switch (mode)
+        {
+            case "Small":
+                TileWidth = 82;
+                TileHeight = 88;
+                IconSize = 32;
+                LabelWidth = 72;
+                break;
+            case "Large":
+                TileWidth = 82;
+                TileHeight = 88;
+                IconSize = 64;
+                LabelWidth = 72;
+                break;
+            default:
+                TileWidth = 82;
+                TileHeight = 88;
+                IconSize = 46;
+                LabelWidth = 72;
+                break;
+        }
+        UpdateLayout();
     }
 
     public void UpdateDisplayBounds()
@@ -147,59 +187,6 @@ public partial class DesktopSurfaceWindow : Window
         }, DispatcherPriority.Input);
     }
 
-    internal bool ValidateInlineRenameLayoutForSmokeTest(DesktopItem item)
-    {
-        if (!_items.Contains(item)) return false;
-        item.EditName = "这是一个很长但不能撑开编辑区域的文件名称.txt";
-        item.IsRenaming = true;
-        ItemsHost.Measure(new System.Windows.Size(200, 160));
-        ItemsHost.Arrange(new Rect(0, 0, 200, 160));
-        ItemsHost.UpdateLayout();
-
-        var tile = FindItemTile(item);
-        var editor = tile is null ? null : FindVisualChild<TextBox>(tile);
-        var icon = tile is null ? null : FindVisualChild<System.Windows.Controls.Image>(tile);
-        var label = tile is null
-            ? null
-            : FindVisualChildren<TextBlock>(tile).FirstOrDefault(text => text.Text == item.Name);
-        var works = editor is not null
-                    && icon is not null
-                    && label?.Visibility == Visibility.Collapsed
-                    && editor.ActualWidth is > 0 and <= 72.5
-                    && editor.TranslatePoint(new System.Windows.Point(), tile).Y
-                       >= icon.TranslatePoint(new System.Windows.Point(), tile).Y + icon.ActualHeight - 0.5;
-        item.IsRenaming = false;
-        return works;
-    }
-
-    internal async Task<bool> ValidateRenameActivationForSmokeTestAsync(DesktopItem item)
-    {
-        // 独立离屏窗口：验证实际激活路径，不调用真实文件重命名或修改用户布局。
-        Left = -30000;
-        Top = -30000;
-        Width = 200;
-        Height = 160;
-        Show();
-        var descriptor = DependencyPropertyDescriptor.FromProperty(OpacityProperty, typeof(Window));
-        var layerWasHidden = false;
-        EventHandler onOpacityChanged = (_, _) => layerWasHidden |= Opacity < 1;
-        descriptor.AddValueChanged(this, onOpacityChanged);
-        try
-        {
-            BeginRename(item);
-            await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
-            var tile = FindItemTile(item);
-            var editor = tile is null ? null : FindVisualChild<TextBox>(tile);
-            var editingWorks = item.IsRenaming && editor is { Visibility: Visibility.Visible };
-            CancelRename(item);
-            return editingWorks && !layerWasHidden && Opacity == 1;
-        }
-        finally
-        {
-            descriptor.RemoveValueChanged(this, onOpacityChanged);
-        }
-    }
-
     public void SetActivationEnabled(bool enabled)
     {
         if (!IsLoaded) return;
@@ -208,7 +195,7 @@ public partial class DesktopSurfaceWindow : Window
         if (enabled)
         {
             if (!IsActive) Activate();
-            _ = _desktopLayerHostService.TryPlaceClosestToDesktopContent(handle, preventActivation: false);
+            _ = _desktopLayerHostService.TryPlaceAboveDesktopContent(handle, preventActivation: false);
             Dispatcher.BeginInvoke(() =>
             {
                 if (!_items.Any(item => item.IsRenaming)) Keyboard.Focus(SelectionSurface);
@@ -275,7 +262,7 @@ public partial class DesktopSurfaceWindow : Window
     {
         Dispatcher.BeginInvoke(() =>
         {
-            if (!_transientPopupOpen && !IsActive) ClearTransientState();
+            if (!_transientPopupOpen && !IsActive && !_renameSession.HasPendingCommits) ClearTransientState();
         }, DispatcherPriority.Background);
     }
 
@@ -289,7 +276,7 @@ public partial class DesktopSurfaceWindow : Window
     {
         if (!IsLoaded || !IsActive) return;
         var handle = new WindowInteropHelper(this).Handle;
-        _ = _desktopLayerHostService.TryPlaceClosestToDesktopContent(handle, preventActivation: false);
+        _ = _desktopLayerHostService.TryPlaceAboveDesktopContent(handle, preventActivation: false);
     }
 
     private void SelectionSurface_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -366,7 +353,7 @@ public partial class DesktopSurfaceWindow : Window
 
         if (!DesktopItemOpenService.TryOpen(item.Path, out var error))
         {
-            MessageBox.Show($"无法打开该项目。\n\n{error}", "MiniC",
+            MessageBox.Show(this, $"无法打开该项目。\n\n{error}", "MiniC",
                 MessageBoxButton.OK, MessageBoxImage.Warning);
         }
         e.Handled = true;
@@ -466,7 +453,7 @@ public partial class DesktopSurfaceWindow : Window
             if (selectedForOpen.Length == 1)
             {
                 if (!DesktopItemOpenService.TryOpen(selectedForOpen[0].Path, out var error))
-                    MessageBox.Show($"无法打开该项目。\n\n{error}", "MiniC",
+                    MessageBox.Show(this, $"无法打开该项目。\n\n{error}", "MiniC",
                         MessageBoxButton.OK, MessageBoxImage.Warning);
                 e.Handled = true;
                 return;
@@ -533,6 +520,12 @@ public partial class DesktopSurfaceWindow : Window
         if (!item.IsRenaming) return;
         var succeeded = await _renameSession.CommitAsync(item,
             name => _callbacks.RenameItemAsync(item, name), keepEditingOnFailure: restoreFocus);
+        if (!succeeded && restoreFocus && item.IsRenaming && IsActive)
+        {
+            var tile = FindItemTile(item);
+            var editor = tile is null ? null : FindVisualChild<TextBox>(tile);
+            editor?.Focus();
+        }
         // 失焦提交不得把焦点抢回桌面；Enter 也只在焦点仍属于当前编辑器时回到选择区。
         if (succeeded && restoreFocus && IsActive && Keyboard.FocusedElement is TextBox { DataContext: DesktopItem focused }
             && ReferenceEquals(focused, item)) Keyboard.Focus(SelectionSurface);

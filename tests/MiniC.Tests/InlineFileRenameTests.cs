@@ -18,12 +18,14 @@ public sealed class InlineFileRenameTests
         string submitted = null;
         Task<bool> Rename(string name) { calls++; submitted = name; return pending.Task; }
         var first = session.CommitAsync(item, Rename, false);
+        Assert.True(session.HasPendingCommits);
         var second = session.CommitAsync(item, Rename, false);
         Assert.Same(first, second);
         Assert.False(session.Cancel(item));
         item.EditName = "later-input";
         pending.SetResult(true);
         Assert.True(await first);
+        Assert.False(session.HasPendingCommits);
         Assert.Equal(1, calls);
         Assert.Equal("changed", submitted);
         Assert.False(item.IsRenaming);
@@ -48,6 +50,7 @@ public sealed class InlineFileRenameTests
         var path = item.Path;
         var session = new InlineFileRenameSession();
         Assert.False(await session.CommitAsync(item, _ => Task.FromResult(false), enter));
+        Assert.False(session.HasPendingCommits);
         Assert.Equal(path, item.Path);
         Assert.Equal(enter, item.IsRenaming);
         if (!enter) Assert.Equal(DesktopFileService.GetRenameEditName(item), item.EditName);

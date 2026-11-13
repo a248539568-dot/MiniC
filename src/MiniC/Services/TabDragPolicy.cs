@@ -19,10 +19,8 @@ internal static class TabDragPolicy
         return TabDragMode.Pending;
     }
 
-    public static TabDropIntent ResolveIntent(TabDragMode mode, bool insideSourceTabs, bool hasMergeTarget) =>
-        mode != TabDragMode.Transfer || insideSourceTabs ? TabDropIntent.Reorder
-        : hasMergeTarget ? TabDropIntent.Merge : TabDropIntent.Detach;
+    public static bool ShowDetachedPreview(TabDragMode mode, Rect sourceTabs, System.Windows.Point pointer) =>
+        mode == TabDragMode.Transfer && !sourceTabs.IsEmpty && !sourceTabs.Contains(pointer);
 }
 
 internal enum TabDragMode { None, Pending, Reorder, Transfer }
-internal enum TabDropIntent { Reorder, Detach, Merge }
