@@ -15,8 +15,8 @@ public sealed class BoxMergeGestureTests
     {
         var gesture = new BoxMergeGesture();
         Assert.Null(gesture.Update(Target, new Point(200, 200), 1000));
-        Assert.Null(gesture.Update(Target, new Point(201, 200), 1999));
-        Assert.Null(gesture.Update(null, new Point(700, 200), 2000));
+        Assert.Null(gesture.Update(Target, new Point(201, 200), 1199));
+        Assert.Null(gesture.Update(null, new Point(700, 200), 1200));
         Assert.Null(gesture.ReadyTarget);
     }
 
@@ -25,11 +25,11 @@ public sealed class BoxMergeGestureTests
     {
         var gesture = new BoxMergeGesture();
         gesture.Update(Target, new Point(200, 200), 1000);
-        Assert.Equal(Target, gesture.Update(Target, new Point(200, 200), 2000));
-        Assert.Null(gesture.Update(null, new Point(700, 200), 2001));
-        Assert.Null(gesture.Update(Target, new Point(200, 200), 2500));
-        Assert.Null(gesture.Update(Target, new Point(200, 200), 2999));
-        Assert.Equal(Target, gesture.Update(Target, new Point(200, 200), 3500));
+        Assert.Equal(Target, gesture.Update(Target, new Point(200, 200), 1200));
+        Assert.Null(gesture.Update(null, new Point(700, 200), 1201));
+        Assert.Null(gesture.Update(Target, new Point(200, 200), 1500));
+        Assert.Null(gesture.Update(Target, new Point(200, 200), 1699));
+        Assert.Equal(Target, gesture.Update(Target, new Point(200, 200), 1700));
     }
 
     [Fact]
@@ -49,9 +49,9 @@ public sealed class BoxMergeGestureTests
     {
         var gesture = new BoxMergeGesture();
         gesture.Update(Target, new Point(200, 200), 1000);
-        Assert.Equal(Target, gesture.Update(Target, new Point(200, 200), 2000));
+        Assert.Equal(Target, gesture.Update(Target, new Point(200, 200), 1200));
         Assert.Null(gesture.Update(Other, new Point(200, 200), 1500));
-        Assert.Equal(Other, gesture.Update(Other, new Point(200, 200), 2500));
+        Assert.Equal(Other, gesture.Update(Other, new Point(200, 200), 1700));
         gesture.Reset();
         Assert.Null(gesture.ReadyTarget);
         Assert.Null(gesture.Update(Other, new Point(200, 200), 2000));
@@ -66,8 +66,8 @@ public sealed class BoxMergeGestureTests
         var gesture = new BoxMergeGesture();
         gesture.Update(Target, new Point(200, 200), 1000, dpi);
         var moved = new Point(200 + 11 * dpi, 200);
-        Assert.Null(gesture.Update(Target, moved, 1999, dpi));
-        Assert.Null(gesture.Update(Target, moved, 2000, dpi));
-        Assert.Equal(Target, gesture.Update(Target, moved, 3000, dpi));
+        Assert.Null(gesture.Update(Target, moved, 1199, dpi));
+        Assert.Null(gesture.Update(Target, moved, 1200, dpi));
+        Assert.Equal(Target, gesture.Update(Target, moved, 1400, dpi));
     }
 }
